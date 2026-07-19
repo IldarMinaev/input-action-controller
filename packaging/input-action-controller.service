@@ -1,0 +1,12 @@
+[Unit]
+Description=Map Linux input events to configurable actions
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/input-action-controller daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

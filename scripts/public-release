@@ -1,0 +1,801 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import ctypes
+import errno
+import os
+from pathlib import Path
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+from typing import NamedTuple
+
+
+REQUIRED_FILES = {
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    "LICENSE",
+    "PKGBUILD",
+    "README.md",
+    "config.example.toml",
+    "docs/configuration.md",
+    "docs/device-discovery.md",
+    "docs/examples/dsnote-gnome-wayland.md",
+    "docs/examples/handy-gnome-wayland.md",
+    "packaging/input-action-controller.service",
+    "pyproject.toml",
+    "requirements-ci.txt",
+    "scripts/makepkg",
+    "scripts/public-release",
+    "scripts/verify-artifacts",
+}
+ALLOWED_PREFIXES = ("src/input_action_controller/", "tests/")
+SCAN_ROOTS = tuple(
+    sorted(
+        (
+            REQUIRED_FILES
+            - {path for path in REQUIRED_FILES if path.startswith(".github/")}
+        )
+        | {".github", "src", "tests"}
+    )
+)
+REGULAR_BLOB_MODES = {"100644", "100755"}
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
+GIT_CONFIG = (
+    "core.hooksPath=/dev/null",
+    "commit.gpgSign=false",
+    "core.fsmonitor=false",
+    "core.attributesFile=/dev/null",
+)
+GIT_LOCAL_ENVIRONMENT = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_ATTR_SOURCE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_QUARANTINE_PATH",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_SUPER_PREFIX",
+    "GIT_WORK_TREE",
+}
+
+
+class PublicTreeError(RuntimeError):
+    pass
+
+
+class GitBlob(NamedTuple):
+    mode: str
+    object_id: str
+    path: str
+
+
+class WorktreeIdentity(NamedTuple):
+    path: Path
+    gitdir: Path
+    gitdir_device: int
+    gitdir_inode: int
+    head: str
+    detached: bool
+    branch: str
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as error:
+        raise OSError(errno.ENOSYS, "libc does not provide renameat2") from error
+
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        AT_FDCWD,
+        os.fsencode(source),
+        AT_FDCWD,
+        os.fsencode(destination),
+        RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            os.fspath(destination),
+        )
+
+
+def _classify_public_file(path: str) -> None:
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise PublicTreeError("public tree contains a non-UTF-8 path") from error
+
+    if path in REQUIRED_FILES:
+        return
+    parts = path.split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise PublicTreeError(f"public tree contains invalid path: {path!r}")
+    for prefix in ALLOWED_PREFIXES:
+        if path.startswith(prefix):
+            relative_parts = path.removeprefix(prefix).split("/")
+            if (
+                relative_parts
+                and all(not part.startswith(".") for part in relative_parts)
+                and relative_parts[-1].endswith(".py")
+            ):
+                return
+    raise PublicTreeError(f"public tree contains unexpected files: {path}")
+
+
+def _is_public_directory(path: str) -> bool:
+    if any(required.startswith(f"{path}/") for required in REQUIRED_FILES):
+        return True
+    if any(part.startswith(".") for part in path.split("/")):
+        return False
+    return any(
+        path == prefix.rstrip("/")
+        or path.startswith(prefix)
+        or prefix.startswith(f"{path}/")
+        for prefix in ALLOWED_PREFIXES
+    )
+
+
+def _files(root: Path) -> set[str]:
+    files: set[str] = set()
+    directories: list[tuple[Path, str]] = [(root, "")]
+    while directories:
+        directory, relative_directory = directories.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except (OSError, UnicodeError) as error:
+            raise PublicTreeError(f"cannot inspect public tree: {error}") from error
+        for entry in entries:
+            path = f"{relative_directory}/{entry.name}".lstrip("/")
+            if not relative_directory and path == ".git":
+                continue
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except (OSError, UnicodeError) as error:
+                raise PublicTreeError(
+                    f"cannot inspect public path '{path}': {error}"
+                ) from error
+            if stat.S_ISDIR(mode):
+                if not _is_public_directory(path):
+                    raise PublicTreeError(
+                        f"public tree contains unexpected directory: {path}"
+                    )
+                directories.append((Path(entry.path), path))
+                continue
+
+            _classify_public_file(path)
+            if stat.S_ISLNK(mode):
+                raise PublicTreeError(f"public tree contains symbolic links: {path}")
+            if not stat.S_ISREG(mode):
+                raise PublicTreeError(f"public tree contains special files: {path}")
+            files.add(path)
+    return files
+
+
+def verify_public_tree(root: Path) -> None:
+    files = _files(root)
+    missing = sorted(REQUIRED_FILES - files)
+    if missing:
+        raise PublicTreeError(f"public tree is missing: {', '.join(missing)}")
+    if not any(path.startswith("src/input_action_controller/") for path in files):
+        raise PublicTreeError("public tree has no runtime modules")
+    if not any(path.startswith("tests/") for path in files):
+        raise PublicTreeError("public tree has no tests")
+
+
+def _git_arguments(arguments: tuple[str, ...]) -> tuple[str, ...]:
+    if not arguments or arguments[0] != "git":
+        return arguments
+    configuration = tuple(item for setting in GIT_CONFIG for item in ("-c", setting))
+    return ("git", *configuration, *arguments[1:])
+
+
+def _git_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in GIT_LOCAL_ENVIRONMENT
+        and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    return environment
+
+
+def _run_result(
+    *arguments: str,
+    cwd: Path,
+    operation: str,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            _git_arguments(arguments),
+            cwd=cwd,
+            env=_git_environment(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, UnicodeError) as error:
+        raise PublicTreeError(f"{operation}: {error}") from error
+
+
+def _git_failure(
+    operation: str,
+    result: subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes],
+) -> PublicTreeError:
+    stderr = result.stderr
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    details = [line.strip() for line in stderr.splitlines() if line.strip()]
+    detail = details[-1] if details else f"Git exited with status {result.returncode}"
+    return PublicTreeError(f"{operation}: {detail}")
+
+
+def _run_bytes(
+    *arguments: str,
+    cwd: Path,
+    operation: str,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        result = subprocess.run(
+            _git_arguments(arguments),
+            cwd=cwd,
+            env=_git_environment(),
+            check=False,
+            capture_output=True,
+        )
+    except (OSError, UnicodeError) as error:
+        raise PublicTreeError(f"{operation}: {error}") from error
+    if result.returncode != 0:
+        raise _git_failure(operation, result)
+    return result
+
+
+def _run(
+    *arguments: str,
+    cwd: Path,
+    operation: str,
+) -> subprocess.CompletedProcess[str]:
+    result = _run_result(*arguments, cwd=cwd, operation=operation)
+    if result.returncode != 0:
+        raise _git_failure(operation, result)
+    return result
+
+
+def _worktree_identity(source: Path, destination: Path) -> WorktreeIdentity | None:
+    listing = _run(
+        "git",
+        "worktree",
+        "list",
+        "--porcelain",
+        "-z",
+        cwd=source,
+        operation="cannot inspect Git worktree registrations",
+    )
+    for record in listing.stdout.split("\0\0"):
+        fields = record.split("\0")
+        if not fields or not fields[0].startswith("worktree "):
+            continue
+        path = Path(fields[0].removeprefix("worktree "))
+        if path != destination:
+            continue
+        values = {
+            key: value
+            for field in fields[1:]
+            for key, separator, value in (field.partition(" "),)
+            if separator
+        }
+        gitdir = Path(
+            _run(
+                "git",
+                "rev-parse",
+                "--absolute-git-dir",
+                cwd=destination,
+                operation="cannot inspect candidate worktree administration",
+            ).stdout.strip()
+        )
+        try:
+            gitdir_stat = gitdir.stat()
+        except (OSError, UnicodeError) as error:
+            raise PublicTreeError(
+                f"cannot inspect candidate worktree administration: {error}"
+            ) from error
+        return WorktreeIdentity(
+            path=path,
+            gitdir=gitdir,
+            gitdir_device=gitdir_stat.st_dev,
+            gitdir_inode=gitdir_stat.st_ino,
+            head=values.get("HEAD", ""),
+            detached="detached" in fields,
+            branch=values.get("branch", ""),
+        )
+    return None
+
+
+def _verify_ref_tree(source: Path, ref: str) -> tuple[GitBlob, ...]:
+    tree = _run(
+        "git",
+        "ls-tree",
+        "-r",
+        "-t",
+        "-z",
+        ref,
+        "--",
+        *SCAN_ROOTS,
+        cwd=source,
+        operation="cannot inspect public ref",
+    )
+    paths: set[str] = set()
+    blobs: list[GitBlob] = []
+    unsupported: list[str] = []
+    for entry in tree.stdout.split("\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split("\t", maxsplit=1)
+        mode, kind, object_id = metadata.split(maxsplit=2)
+        if kind == "blob":
+            _classify_public_file(path)
+            paths.add(path)
+            if mode in REGULAR_BLOB_MODES:
+                blobs.append(GitBlob(mode, object_id, path))
+        if (
+            (kind == "blob" and mode not in REGULAR_BLOB_MODES)
+            or (kind == "tree" and mode != "040000")
+            or kind not in {"blob", "tree"}
+        ):
+            unsupported.append(path)
+
+    if unsupported:
+        raise PublicTreeError(
+            "public ref contains unsupported entries: " + ", ".join(sorted(unsupported))
+        )
+    missing = sorted(REQUIRED_FILES - paths)
+    if missing:
+        raise PublicTreeError(f"public ref is missing: {', '.join(missing)}")
+    if not any(path.startswith("src/input_action_controller/") for path in paths):
+        raise PublicTreeError("public ref has no runtime modules")
+    if not any(path.startswith("tests/") for path in paths):
+        raise PublicTreeError("public ref has no tests")
+    return tuple(blobs)
+
+
+def _write_blob(source: Path, destination: Path, blob: GitBlob) -> None:
+    target = destination.joinpath(*blob.path.split("/"))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = _run_bytes(
+            "git",
+            "cat-file",
+            "blob",
+            blob.object_id,
+            cwd=source,
+            operation=f"cannot read public blob '{blob.path}'",
+        )
+        with target.open("xb") as output:
+            output.write(content.stdout)
+        target.chmod(0o755 if blob.mode == "100755" else 0o644)
+    except (OSError, UnicodeError) as error:
+        raise PublicTreeError(
+            f"cannot export public path '{blob.path}': {error}"
+        ) from error
+
+
+def _create_root_commit(destination: Path, blobs: tuple[GitBlob, ...]) -> str:
+    _run(
+        "git",
+        "read-tree",
+        "--empty",
+        cwd=destination,
+        operation="cannot initialize candidate index",
+    )
+    for blob in blobs:
+        _run(
+            "git",
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            blob.mode,
+            blob.object_id,
+            blob.path,
+            cwd=destination,
+            operation=f"cannot stage public path '{blob.path}'",
+        )
+    tree = _run(
+        "git",
+        "write-tree",
+        cwd=destination,
+        operation="cannot write candidate tree",
+    ).stdout.strip()
+    return _run(
+        "git",
+        "commit-tree",
+        tree,
+        "-m",
+        "feat: initial release",
+        cwd=destination,
+        operation="cannot create candidate root commit",
+    ).stdout.strip()
+
+
+def _validate_candidate(
+    source: Path,
+    staging: Path,
+    candidate_commit: str,
+    blobs: tuple[GitBlob, ...],
+) -> WorktreeIdentity:
+    verify_public_tree(staging)
+    identity = _worktree_identity(source, staging)
+    if (
+        identity is None
+        or identity.head != candidate_commit
+        or identity.detached
+        or identity.branch != "refs/heads/release-candidate"
+    ):
+        raise PublicTreeError(
+            "candidate worktree is not attached to the expected branch"
+        )
+
+    history = _run(
+        "git",
+        "rev-list",
+        "--parents",
+        candidate_commit,
+        cwd=staging,
+        operation="cannot validate candidate history",
+    ).stdout.split()
+    if history != [candidate_commit]:
+        raise PublicTreeError("candidate must contain exactly one root commit")
+
+    subject = _run(
+        "git",
+        "show",
+        "-s",
+        "--format=%s",
+        candidate_commit,
+        cwd=staging,
+        operation="cannot validate candidate commit subject",
+    ).stdout.rstrip("\n")
+    if subject != "feat: initial release":
+        raise PublicTreeError("candidate commit subject is not 'feat: initial release'")
+
+    tree = _run(
+        "git",
+        "ls-tree",
+        "-r",
+        "-z",
+        candidate_commit,
+        cwd=staging,
+        operation="cannot validate candidate tree",
+    )
+    candidate_blobs = []
+    for entry in tree.stdout.split("\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split("\t", maxsplit=1)
+        mode, kind, object_id = metadata.split(maxsplit=2)
+        if kind != "blob":
+            raise PublicTreeError(f"candidate tree contains non-blob entry: {path}")
+        candidate_blobs.append(GitBlob(mode, object_id, path))
+    if tuple(candidate_blobs) != blobs:
+        raise PublicTreeError("candidate tree does not match the approved public blobs")
+
+    status = _run(
+        "git",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        cwd=staging,
+        operation="cannot validate candidate worktree status",
+    )
+    if status.stdout:
+        raise PublicTreeError("candidate worktree is not clean")
+    return identity
+
+
+def _preserved_staging_error(
+    error: Exception,
+    staging: Path,
+    worktree_identity: WorktreeIdentity | None,
+    branch_owned_at: str | None,
+) -> PublicTreeError:
+    quoted_staging = shlex.quote(os.fspath(staging))
+    details = [f"{error}; staging preserved at '{staging}'"]
+    if worktree_identity is not None:
+        details.append(
+            f"recovery required: git worktree remove --force {quoted_staging}"
+        )
+    else:
+        details.append(
+            "recovery required: inspect with git worktree list --porcelain "
+            "before removing the staging path"
+        )
+    if branch_owned_at is not None:
+        details.append(
+            "candidate branch was created; after verifying its current value, remove it with: "
+            "git update-ref -d refs/heads/release-candidate " + branch_owned_at
+        )
+    return PublicTreeError("; ".join(details))
+
+
+def create_candidate(source: Path, destination: Path, ref: str = "HEAD") -> str:
+    destination = destination.parent.resolve() / destination.name
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError) as error:
+        raise PublicTreeError(
+            f"cannot inspect destination '{destination}': {error}"
+        ) from error
+    else:
+        raise PublicTreeError(f"destination already exists: {destination}")
+
+    source = source.resolve()
+    commit = _run(
+        "git",
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{ref}^{{commit}}",
+        cwd=source,
+        operation=f"cannot resolve release ref '{ref}'",
+    ).stdout.strip()
+    unstaged = _run_result(
+        "git",
+        "diff",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--",
+        cwd=source,
+        operation="cannot inspect unstaged tracked changes",
+    )
+    if unstaged.returncode == 1:
+        raise PublicTreeError("source has unstaged tracked changes")
+    if unstaged.returncode != 0:
+        raise _git_failure("cannot inspect unstaged tracked changes", unstaged)
+
+    staged = _run_result(
+        "git",
+        "diff",
+        "--cached",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        "HEAD",
+        "--",
+        cwd=source,
+        operation="cannot inspect staged tracked changes",
+    )
+    if staged.returncode == 1:
+        raise PublicTreeError("source has staged tracked changes")
+    if staged.returncode != 0:
+        raise _git_failure("cannot inspect staged tracked changes", staged)
+
+    branch = _run_result(
+        "git",
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/heads/release-candidate",
+        cwd=source,
+        operation="cannot inspect the local release-candidate branch",
+    )
+    if branch.returncode == 0:
+        raise PublicTreeError("local branch already exists: release-candidate")
+    if branch.returncode != 1:
+        raise _git_failure("cannot inspect the local release-candidate branch", branch)
+
+    blobs = _verify_ref_tree(source, commit)
+
+    try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.",
+                dir=destination.parent,
+            )
+        )
+    except (OSError, UnicodeError) as error:
+        raise PublicTreeError(
+            f"cannot create private candidate staging: {error}"
+        ) from error
+
+    worktree_identity: WorktreeIdentity | None = None
+    branch_owned_at: str | None = None
+    try:
+        _run(
+            "git",
+            "worktree",
+            "add",
+            "--detach",
+            "--no-checkout",
+            str(staging),
+            commit,
+            cwd=source,
+            operation="cannot create candidate staging worktree",
+        )
+        registered_worktree = _worktree_identity(source, staging)
+        if (
+            registered_worktree is None
+            or registered_worktree.head != commit
+            or not registered_worktree.detached
+        ):
+            raise PublicTreeError("cannot confirm candidate staging worktree ownership")
+        worktree_identity = registered_worktree
+
+        for blob in blobs:
+            _write_blob(source, staging, blob)
+
+        verify_public_tree(staging)
+        candidate_commit = _create_root_commit(staging, blobs)
+        zero_object_id = "0" * len(candidate_commit)
+        _run(
+            "git",
+            "update-ref",
+            "refs/heads/release-candidate",
+            candidate_commit,
+            zero_object_id,
+            cwd=source,
+            operation="cannot create local release-candidate branch",
+        )
+        branch_owned_at = candidate_commit
+        _run(
+            "git",
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/release-candidate",
+            cwd=staging,
+            operation="cannot attach candidate staging to release-candidate branch",
+        )
+        worktree_identity = _validate_candidate(
+            source,
+            staging,
+            candidate_commit,
+            blobs,
+        )
+    except Exception as error:
+        raise _preserved_staging_error(
+            error,
+            staging,
+            worktree_identity,
+            branch_owned_at,
+        ) from error
+
+    destination_published = False
+    try:
+        _rename_directory_noreplace(staging, destination)
+        destination_published = True
+
+        _run(
+            "git",
+            "worktree",
+            "repair",
+            str(destination),
+            cwd=source,
+            operation="cannot repair published candidate worktree",
+        )
+        published_identity = _validate_candidate(
+            source,
+            destination,
+            candidate_commit,
+            blobs,
+        )
+        if (
+            published_identity.gitdir != worktree_identity.gitdir
+            or published_identity.gitdir_device != worktree_identity.gitdir_device
+            or published_identity.gitdir_inode != worktree_identity.gitdir_inode
+        ):
+            raise PublicTreeError("published candidate worktree administration changed")
+    except Exception as error:
+        if destination_published:
+            quoted_destination = shlex.quote(os.fspath(destination))
+            raise PublicTreeError(
+                f"candidate published at '{destination}' but finalization failed: "
+                f"{error}; recovery required: git worktree repair {quoted_destination}"
+            ) from error
+
+        if isinstance(error, OSError) and error.errno == errno.ENOSYS:
+            publication_error = PublicTreeError("renameat2 is unavailable")
+            raise _preserved_staging_error(
+                publication_error,
+                staging,
+                worktree_identity,
+                branch_owned_at,
+            ) from error
+
+        if isinstance(error, OSError) and error.errno in {
+            errno.EEXIST,
+            errno.ENOTEMPTY,
+        }:
+            publication_error = PublicTreeError(
+                f"destination already exists: {destination}"
+            )
+        else:
+            publication_error = PublicTreeError(
+                f"cannot publish candidate worktree: {error}"
+            )
+        raise _preserved_staging_error(
+            publication_error,
+            staging,
+            worktree_identity,
+            branch_owned_at,
+        ) from error
+
+    return candidate_commit
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    verify = commands.add_parser("verify-tree")
+    verify.add_argument("path", type=Path)
+
+    create = commands.add_parser("create-candidate")
+    create.add_argument("destination", type=Path)
+    create.add_argument("--source", type=Path, default=Path.cwd())
+    create.add_argument("--ref", default="HEAD")
+    return parser
+
+
+def main(arguments: list[str] | None = None) -> int:
+    options = _parser().parse_args(arguments)
+    try:
+        if options.command == "verify-tree":
+            verify_public_tree(options.path)
+            return 0
+        commit = create_candidate(options.source, options.destination, options.ref)
+    except (
+        PublicTreeError,
+        OSError,
+        UnicodeError,
+        subprocess.SubprocessError,
+    ) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(commit)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

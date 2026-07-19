@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+import argparse
+from pathlib import Path
+import re
+import subprocess
+import sys
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_PACKAGE = ROOT / "src" / "input_action_controller"
+PACKAGE_NAME = "input-action-controller"
+PACKAGE_VERSION = "0.1.0-1"
+RUNTIME_MODULES = {
+    path.relative_to(SOURCE_PACKAGE).as_posix() for path in SOURCE_PACKAGE.rglob("*.py")
+}
+WHEEL_MEMBERS = {f"input_action_controller/{module}" for module in RUNTIME_MODULES}
+PACKAGE_MEMBERS = {
+    "usr/bin/input-action-controller",
+    "usr/lib/systemd/user/input-action-controller.service",
+    "usr/share/doc/input-action-controller/config.example.toml",
+    "usr/share/doc/input-action-controller/README.md",
+    "usr/share/doc/input-action-controller/docs/configuration.md",
+    "usr/share/doc/input-action-controller/docs/device-discovery.md",
+    "usr/share/doc/input-action-controller/docs/examples/handy-gnome-wayland.md",
+    "usr/share/doc/input-action-controller/docs/examples/dsnote-gnome-wayland.md",
+    "usr/share/licenses/input-action-controller/LICENSE",
+}
+REQUIRED_DEPENDENCIES = {"pyudev", "evdev", "tomlkit"}
+REQUIRED_ARCH_DEPENDENCIES = {
+    "python",
+    "python-pyudev",
+    "python-evdev",
+    "python-tomlkit",
+    "systemd",
+    "sudo",
+    "acl",
+    "coreutils",
+}
+SITE_PACKAGES_TREE = re.compile(
+    r"^(usr/lib/python\d+\.\d+/site-packages/input_action_controller)/"
+)
+
+
+class VerificationError(RuntimeError):
+    pass
+
+
+def require_members(
+    members: set[str], required_members: set[str], artifact: str
+) -> None:
+    missing = sorted(required_members - members)
+    if missing:
+        raise VerificationError(
+            f"{artifact} is missing required members: {', '.join(missing)}"
+        )
+
+
+def wheel_members_and_metadata(path: Path) -> tuple[set[str], str]:
+    with zipfile.ZipFile(path) as wheel:
+        members = set(wheel.namelist())
+        metadata_paths = [
+            member for member in members if member.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_paths) != 1:
+            raise VerificationError(f"wheel has {len(metadata_paths)} METADATA files")
+        return members, wheel.read(metadata_paths[0]).decode("utf-8")
+
+
+def archive_output(path: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["bsdtar", arguments[0], str(path), *arguments[1:]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise VerificationError(result.stderr.strip() or f"cannot inspect {path}")
+    return result.stdout
+
+
+def package_members_and_metadata(path: Path) -> tuple[set[str], dict[str, list[str]]]:
+    members = set(archive_output(path, "-tf").splitlines())
+    metadata: dict[str, list[str]] = {}
+    for line in archive_output(path, "-xOf", ".PKGINFO").splitlines():
+        key, separator, value = line.partition(" = ")
+        if separator:
+            metadata.setdefault(key, []).append(value)
+    return members, metadata
+
+
+def verify_wheel(path: Path) -> None:
+    members, metadata = wheel_members_and_metadata(path)
+    require_members(members, WHEEL_MEMBERS, "wheel")
+    dependencies = {
+        line.removeprefix("Requires-Dist: ")
+        for line in metadata.splitlines()
+        if line.startswith("Requires-Dist: ")
+    }
+    missing_dependencies = sorted(REQUIRED_DEPENDENCIES - dependencies)
+    if missing_dependencies:
+        raise VerificationError(
+            f"wheel METADATA is missing Requires-Dist: {', '.join(missing_dependencies)}"
+        )
+
+
+def verify_package(path: Path) -> None:
+    members, metadata = package_members_and_metadata(path)
+    if metadata.get("pkgname") != [PACKAGE_NAME]:
+        raise VerificationError(f"package has pkgname {metadata.get('pkgname')!r}")
+    if metadata.get("pkgver") != [PACKAGE_VERSION]:
+        raise VerificationError(f"package has pkgver {metadata.get('pkgver')!r}")
+    require_members(members, PACKAGE_MEMBERS, "package")
+
+    dependencies = set(metadata.get("depend", []))
+    missing_dependencies = sorted(REQUIRED_ARCH_DEPENDENCIES - dependencies)
+    if missing_dependencies:
+        raise VerificationError(
+            f"package is missing required dependencies: {', '.join(missing_dependencies)}"
+        )
+
+    site_packages_trees = {
+        match.group(1)
+        for member in members
+        if (match := SITE_PACKAGES_TREE.match(member))
+    }
+    if len(site_packages_trees) != 1:
+        raise VerificationError(
+            "package must contain exactly one Python site-packages tree: "
+            f"{', '.join(sorted(site_packages_trees)) or 'none'}"
+        )
+    site_packages_tree = site_packages_trees.pop()
+    require_members(
+        members,
+        {f"{site_packages_tree}/{module}" for module in RUNTIME_MODULES},
+        "package",
+    )
+
+    forbidden = sorted(
+        member
+        for member in members
+        if member.startswith("etc/") or "udev/rules.d/" in member
+    )
+    if forbidden:
+        raise VerificationError(f"forbidden package member: {', '.join(forbidden)}")
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wheel", required=True, type=Path)
+    parser.add_argument("--package", type=Path)
+    return parser.parse_args()
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        verify_wheel(arguments.wheel)
+        if arguments.package is not None:
+            verify_package(arguments.package)
+    except (OSError, VerificationError, zipfile.BadZipFile) as error:
+        print(f"artifact verification failed: {error}", file=sys.stderr)
+        return 1
+    print("artifact verification passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,11 @@
+.worktrees/
+.superpowers/
+.makepkg/
+build/
+dist/
+dist-pkg/
+src/*.egg-info/
+pkg/
+*.pkg.tar.*
+__pycache__/
+.release-candidate/

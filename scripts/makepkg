@@ -1,0 +1,70 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+pkgname=input-action-controller
+pkgver=0.1.0
+pkgrel=1
+build_root=${MAKEPKG_BUILD_ROOT:-"$root/.makepkg"}
+source_dir="$build_root/sources"
+archive="$source_dir/$pkgname-$pkgver.tar.gz"
+source_paths=(
+  .github
+  .gitignore
+  LICENSE
+  PKGBUILD
+  README.md
+  config.example.toml
+  docs/configuration.md
+  docs/device-discovery.md
+  docs/examples/dsnote-gnome-wayland.md
+  docs/examples/handy-gnome-wayland.md
+  packaging/input-action-controller.service
+  pyproject.toml
+  requirements-ci.txt
+  scripts/makepkg
+  scripts/public-release
+  scripts/verify-artifacts
+  src
+  tests
+)
+
+rm -rf "$build_root/build"
+mkdir -p "$build_root/build" "$source_dir"
+rm -f "$archive"
+git -C "$root" ls-files -z -- "${source_paths[@]}" \
+  | LC_ALL=C sort -z \
+  | tar -C "$root" \
+      --null \
+      --files-from=- \
+      --mtime="@${SOURCE_DATE_EPOCH:-0}" \
+      --owner=0 \
+      --group=0 \
+      --numeric-owner \
+      --transform="s,^,$pkgname-$pkgver/," \
+      -czf "$archive"
+
+if [[ ${1:-} == "--source-only" ]]; then
+  if (( $# != 1 )); then
+    printf '%s\n' "--source-only cannot be combined with makepkg options" >&2
+    exit 2
+  fi
+  exit 0
+fi
+
+cd "$root"
+BUILDDIR="$build_root/build" \
+SRCDEST="$source_dir" \
+PKGDEST="$root" \
+makepkg "$@"
+
+wheel_directory="$build_root/build/$pkgname/src/$pkgname-$pkgver/dist"
+shopt -s nullglob
+wheels=("$wheel_directory"/*.whl)
+if (( ${#wheels[@]} != 1 )); then
+  printf 'expected one wheel in %s, found %s\n' "$wheel_directory" "${#wheels[@]}" >&2
+  exit 1
+fi
+
+package="$root/$pkgname-$pkgver-$pkgrel-any.pkg.tar.zst"
+python "$root/scripts/verify-artifacts" --wheel "${wheels[0]}" --package "$package"

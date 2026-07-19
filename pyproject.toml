@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "input-action-controller"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pyudev", "evdev", "tomlkit"]
+
+[project.scripts]
+input-action-controller = "input_action_controller.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+extend-include = ["scripts/verify-artifacts", "scripts/public-release"]
