@@ -19,10 +19,10 @@ import tomlkit
 import pyudev
 from evdev import InputDevice
 
-from ..config import load_config, parse_config
+from ..config import ConfigError, load_config, parse_config
 from ..devices.discovery import DeviceCandidate, DeviceDiscovery, resolve_profiles
-from ..models import AppConfig
-from .actions import ActionDraft, apply_action_draft
+from ..models import AppConfig, EvdevProfile
+from .actions import ActionDraft, action_draft_from_config, apply_action_draft
 from .capture import (
     HidrawCaptureError,
     capture_evdev_presses,
@@ -36,8 +36,10 @@ from .permissions import (
     PermissionTransaction,
     ReconnectVerificationError,
     render_rule,
+    managed_rules_for_profile,
     verify_reconnected_candidate,
 )
+from .profiles import compatible_profiles
 from .service import ServiceChoice, ServiceSnapshot
 
 
@@ -179,9 +181,16 @@ class SetupPermissionFactory:
         candidates: tuple[DeviceCandidate, ...],
         *,
         access: str = UACCESS,
+        replace_profile_name: str | None = None,
     ) -> PermissionTransaction:
+        obsolete = (
+            managed_rules_for_profile(replace_profile_name)
+            if replace_profile_name is not None
+            else ()
+        )
         return PermissionTransaction(
-            render_rule(profile_name, selectors, candidates, access=access)
+            render_rule(profile_name, selectors, candidates, access=access),
+            obsolete_destinations=obsolete,
         )
 
     def begin_reconnect_monitor(self, selectors: SelectorDraft) -> ReconnectMonitor:
@@ -245,7 +254,7 @@ class SetupPermissionFactory:
             return verify_reconnected_candidate(
                 selectors,
                 candidate,
-                access_checker=lambda item: self._access(item.node, os.R_OK),
+                access_checker=lambda item: self._access(item.node, os.R_OK | os.W_OK),
                 acl_checker=self._acl_checker,
                 production_resolution_checker=lambda item: self._resolves_provisionally(
                     item, selectors
@@ -273,7 +282,7 @@ def _has_current_user_acl(
     runner=subprocess.run,
     uid=os.getuid,
 ) -> bool:
-    """Check that uaccess granted this user read permission on the new node."""
+    """Check that uaccess granted this user a raw named read/write ACL."""
     result = runner(
         (
             "/usr/bin/getfacl",
@@ -296,7 +305,8 @@ def _has_current_user_acl(
         if kind != "user" or not separator:
             continue
         subject, separator, permissions = remainder.partition(":")
-        if subject == expected_uid and separator and "r" in permissions:
+        entry = permissions.split()[0] if permissions.split() else ""
+        if subject == expected_uid and separator and "r" in entry and "w" in entry:
             return True
     return False
 
@@ -420,18 +430,51 @@ class SetupSession:
                     self._dependencies.prompts.report_backup_restored(backup)
                     editable = self._dependencies.config_editor.load(self._config_path)
 
-            action = self._dependencies.prompts.choose_action(editable)
             candidates = tuple(self._dependencies.discovery.enumerate())
             selected = self._dependencies.prompts.choose_device(candidates)
-            profile_name = self._dependencies.prompts.choose_profile_name(
-                editable,
-                selected,
+            choose_operation = getattr(
+                self._dependencies.prompts,
+                "choose_profile_operation",
+                None,
             )
+            current_config = None
+            compatible = ()
+            existing_profile = None
+            if choose_operation is not None:
+                try:
+                    current_config = parse_config(editable.document)
+                except ConfigError:
+                    pass
+                if current_config is not None:
+                    compatible = compatible_profiles(current_config.devices, selected)
+            replace_name = (
+                choose_operation(tuple(profile.name for profile in compatible))
+                if choose_operation is not None and compatible
+                else None
+            )
+            if replace_name is None:
+                action = self._dependencies.prompts.choose_action(editable)
+                profile_name = self._dependencies.prompts.choose_profile_name(
+                    editable,
+                    selected,
+                )
+            else:
+                existing_profile = next(
+                    profile for profile in compatible if profile.name == replace_name
+                )
+                assert current_config is not None
+                existing_action = next(
+                    action
+                    for action in current_config.actions
+                    if action.name == existing_profile.action
+                )
+                action = action_draft_from_config(existing_action)
+                profile_name = existing_profile.name
             selectors = self._propose_selectors(selected, candidates)
             self._confirm_keyboard_capture(profile_name, selected)
 
             capture_candidate = selected
-            manage_permission = selected.event_codes is None
+            manage_permission = selected.event_codes is None or replace_name is not None
             if not manage_permission:
                 manage_permission = (
                     self._dependencies.prompts.confirm_managed_permission(
@@ -443,11 +486,18 @@ class SetupSession:
                 access = self._dependencies.prompts.choose_permission_access(
                     profile_name
                 )
+                create_kwargs = {"access": access}
+                if replace_name is not None:
+                    create_kwargs["replace_profile_name"] = replace_name
                 permission_transaction = self._dependencies.permission_factory.create(
                     profile_name,
                     selectors,
                     candidates,
-                    access=access,
+                    **create_kwargs,
+                )
+                permission_transaction.rollback_verification = (selectors, access)
+                permission_transaction.rollback_reconnect_required = (
+                    replace_name is not None
                 )
                 permission_transaction.prepare()
                 if not self._dependencies.prompts.confirm_permission(
@@ -487,9 +537,17 @@ class SetupSession:
                     )
                 )
 
-            trigger = self._capture_trigger(capture_candidate)
+            trigger = self._capture_trigger(
+                capture_candidate,
+                existing_profile=existing_profile,
+            )
             document = self._proposed_document(
-                editable.document, action, profile_name, selectors, trigger
+                editable.document,
+                action,
+                profile_name,
+                selectors,
+                trigger,
+                replace_name=replace_name,
             )
             config = self._validate_document(document)
             self._validate_runtime_profile(config, profile_name, capture_candidate.node)
@@ -628,7 +686,12 @@ class SetupSession:
         ):
             raise SetupCancelled("Keyboard capture was not confirmed.")
 
-    def _capture_trigger(self, candidate: DeviceCandidate):
+    def _capture_trigger(
+        self,
+        candidate: DeviceCandidate,
+        *,
+        existing_profile: Any = None,
+    ):
         while True:
             if candidate.subsystem == "input":
                 self._dependencies.prompts.arm_evdev_capture(
@@ -642,7 +705,18 @@ class SetupSession:
                         stream,
                         timeout_seconds=EVDEV_CAPTURE_TIMEOUT_SECONDS,
                     )
-                    return self._dependencies.prompts.choose_evdev_trigger(events)
+                    prompt_options = {}
+                    if (
+                        isinstance(existing_profile, EvdevProfile)
+                        and existing_profile.mode == "toggle"
+                    ):
+                        prompt_options["default_toggle_timeout_seconds"] = (
+                            existing_profile.toggle_off_timeout_seconds
+                        )
+                    return self._dependencies.prompts.choose_evdev_trigger(
+                        events,
+                        **prompt_options,
+                    )
                 if candidate.subsystem == "hidraw":
                     return capture_hidraw(
                         stream,
@@ -667,6 +741,8 @@ class SetupSession:
         profile_name: str,
         selectors: SelectorDraft,
         trigger: Any,
+        *,
+        replace_name: str | None = None,
     ) -> tomlkit.TOMLDocument:
         document = tomlkit.parse(tomlkit.dumps(original))
         actions = document.get("actions")
@@ -678,6 +754,7 @@ class SetupSession:
             action=action.name,
             selectors=selectors,
             trigger=trigger,
+            replace_name=replace_name,
         )
         return document
 
@@ -805,12 +882,12 @@ class SetupSession:
             recovered = (
                 self._restore_component(
                     "permission",
-                    permission_transaction.rollback,
+                    lambda: self._rollback_permission(permission_transaction),
                     transaction=permission_transaction,
                 )
                 and recovered
             )
-        if service_snapshot is not None:
+        if service_snapshot is not None and recovered:
             recovered = (
                 self._restore_component(
                     "service",
@@ -836,17 +913,36 @@ class SetupSession:
             recovered = (
                 self._restore_component(
                     "permission",
-                    permission_transaction.rollback,
+                    lambda: self._rollback_permission(permission_transaction),
                     transaction=permission_transaction,
                 )
                 and recovered
             )
-        return (
-            self._restore_component(
-                "service",
-                lambda: self._dependencies.service.restore(service_snapshot),
+        if not recovered:
+            return False
+        return self._restore_component(
+            "service",
+            lambda: self._dependencies.service.restore(service_snapshot),
+        )
+
+    def _rollback_permission(self, transaction: Any) -> None:
+        reconnect_required = getattr(transaction, "rollback_reconnect_required", False)
+        verification = getattr(transaction, "rollback_verification", None)
+        monitor = None
+        if reconnect_required and verification is not None:
+            selectors, _access = verification
+            monitor = self._dependencies.permission_factory.begin_reconnect_monitor(
+                selectors
             )
-            and recovered
+        transaction.rollback()
+        if monitor is None or verification is None:
+            return
+        selectors, access = verification
+        self._dependencies.prompts.show_reconnect_instruction(RECONNECT_TIMEOUT_SECONDS)
+        self._dependencies.permission_factory.verify_reconnected(
+            selectors,
+            monitor,
+            access=access,
         )
 
     def _finalize_success(

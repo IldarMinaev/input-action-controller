@@ -97,7 +97,7 @@ class PackageMetadataTests(unittest.TestCase):
             r"(?m)^# Maintainer: Ildar Minaev <ildar\.minaev@gmail\.com>$",
         )
         self.assertRegex(content, r"(?m)^pkgname=input-action-controller$")
-        self.assertRegex(content, r"(?m)^pkgver=0\.1\.0$")
+        self.assertRegex(content, r"(?m)^pkgver=0\.1\.1$")
         self.assertIn("pkgrel=1", content)
         self.assertRegex(
             content,
@@ -264,7 +264,7 @@ class MakepkgScriptTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
-            archive = build_root / "sources" / "input-action-controller-0.1.0.tar.gz"
+            archive = build_root / "sources" / "input-action-controller-0.1.1.tar.gz"
             self.assertTrue(archive.is_file(), f"missing source archive: {archive}")
             first_archive = archive.read_bytes()
             with tarfile.open(archive, mode="r:gz") as source_archive:
@@ -288,7 +288,7 @@ class MakepkgScriptTests(unittest.TestCase):
             self.assertEqual(second_result.returncode, 0, second_result.stderr)
             self.assertEqual(first_archive, archive.read_bytes())
 
-        source_root = "input-action-controller-0.1.0/"
+        source_root = "input-action-controller-0.1.1/"
         required_members = (
             ".github/dependabot.yml",
             ".github/workflows/ci.yml",
@@ -426,13 +426,13 @@ class ArtifactVerifierTests(unittest.TestCase):
     )
 
     def test_verifies_the_release_package_version(self):
-        self.assertEqual(verify_artifacts.PACKAGE_VERSION, "0.1.0-1")
+        self.assertEqual(verify_artifacts.PACKAGE_VERSION, "0.1.1-1")
 
     def test_accepts_wheel_only_verification(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             wheel = (
                 Path(temporary_directory)
-                / "input_action_controller-0.1.0-py3-none-any.whl"
+                / "input_action_controller-0.1.1-py3-none-any.whl"
             )
             self.create_wheel(wheel)
 
@@ -453,10 +453,10 @@ class ArtifactVerifierTests(unittest.TestCase):
                 if module not in excluded_modules:
                     wheel.writestr(f"input_action_controller/{module}", "")
             wheel.writestr(
-                "input_action_controller-0.1.0.dist-info/METADATA",
+                "input_action_controller-0.1.1.dist-info/METADATA",
                 "Metadata-Version: 2.1\n"
                 "Name: input-action-controller\n"
-                "Version: 0.1.0\n"
+                "Version: 0.1.1\n"
                 "Requires-Dist: pyudev\n"
                 "Requires-Dist: evdev\n"
                 "Requires-Dist: tomlkit\n",
@@ -496,7 +496,7 @@ class ArtifactVerifierTests(unittest.TestCase):
             package_dependencies = dependencies or self.runtime_dependencies
             metadata = (
                 "pkgname = input-action-controller\n"
-                "pkgver = 0.1.0-1\n"
+                "pkgver = 0.1.1-1\n"
                 + "".join(
                     f"depend = {dependency}\n" for dependency in package_dependencies
                 )
@@ -529,8 +529,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_accepts_a_different_python_minor_version(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel)
             self.create_package(package, python_version="3.13")
 
@@ -541,8 +541,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_rejects_a_wheel_missing_a_runtime_module(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel, ("daemon.py",))
             self.create_package(package)
 
@@ -554,8 +554,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_rejects_missing_repeated_package_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel)
             self.create_package(
                 package,
@@ -574,8 +574,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_rejects_ambiguous_python_site_packages_trees(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel)
             self.create_package(
                 package, python_version="3.13", extra_python_versions=("3.14",)
@@ -589,8 +589,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_rejects_a_missing_python_site_packages_tree(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel)
             self.create_package(package, include_package_tree=False)
 
@@ -602,8 +602,8 @@ class ArtifactVerifierTests(unittest.TestCase):
     def test_rejects_an_active_package_configuration(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            wheel = temporary_root / "input_action_controller-0.1.0-py3-none-any.whl"
-            package = temporary_root / "input-action-controller-0.1.0-1-any.pkg.tar.zst"
+            wheel = temporary_root / "input_action_controller-0.1.1-py3-none-any.whl"
+            package = temporary_root / "input-action-controller-0.1.1-1-any.pkg.tar.zst"
             self.create_wheel(wheel)
             self.create_package(
                 package,

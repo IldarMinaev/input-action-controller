@@ -449,6 +449,32 @@ class HidrawCaptureTests(unittest.TestCase):
 
 
 class ApplyDeviceDraftTests(unittest.TestCase):
+    def test_replaces_existing_profile_in_place(self):
+        document = tomlkit.parse(
+            '[actions.voice]\non_command = ["on"]\noff_command = ["off"]\n'
+            '[[devices]]\nname = "Mouse"\naction = "voice"\n'
+            'transport = "evdev"\nmode = "toggle"\nvendor_id = "1234"\n'
+            'product_id = "5678"\ntoggle_events = ["BTN_EXTRA"]\n'
+        )
+        apply_device_draft(
+            document,
+            name="Mouse",
+            action="voice",
+            selectors=SelectorDraft(
+                "evdev",
+                "1234",
+                "5678",
+                None,
+                classifier=("ID_INPUT_MOUSE", "1"),
+            ),
+            trigger=EvdevTriggerDraft(mode="toggle", toggle_events=("BTN_SIDE",)),
+            replace_name="Mouse",
+        )
+
+        self.assertEqual(len(document["devices"]), 1)
+        self.assertEqual(document["devices"][0]["toggle_events"], ["BTN_SIDE"])
+        self.assertEqual(document["devices"][0]["input_classifier"], "ID_INPUT_MOUSE")
+
     def test_adds_hidraw_reports_and_runtime_selectors_without_udev_classifier(self):
         document = tomlkit.parse(
             "# Keep this comment.\n"
@@ -490,7 +516,13 @@ class ApplyDeviceDraftTests(unittest.TestCase):
         document = tomlkit.parse(
             '[actions.voice]\non_command = ["on"]\noff_command = ["off"]\n'
         )
-        selectors = SelectorDraft("evdev", "1234", "5678", None)
+        selectors = SelectorDraft(
+            "evdev",
+            "1234",
+            "5678",
+            None,
+            classifier=("ID_INPUT_MOUSE", "1"),
+        )
 
         apply_device_draft(
             document,
@@ -506,6 +538,7 @@ class ApplyDeviceDraftTests(unittest.TestCase):
 
         device = document["devices"][0]
         self.assertEqual(device["transport"], "evdev")
+        self.assertEqual(device["input_classifier"], "ID_INPUT_MOUSE")
         self.assertEqual(device["toggle_events"], ["BTN_SIDE"])
         self.assertEqual(device["toggle_off_timeout_seconds"], 0)
         self.assertNotIn("interface_number", device)

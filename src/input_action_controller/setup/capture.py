@@ -146,16 +146,26 @@ def apply_device_draft(
     action: str,
     selectors: SelectorDraft,
     trigger: EvdevTriggerDraft | HidrawTriggerDraft,
+    replace_name: str | None = None,
 ) -> None:
-    """Add a captured device profile to a TomlKit document."""
+    """Add or replace a captured device profile in a TomlKit document."""
     devices = document.get("devices")
     if devices is None:
         devices = tomlkit.aot()
         document["devices"] = devices
     if not isinstance(devices, list):
         raise ValueError("devices must be a TOML array")
-    if any(
-        device.get("name") == name for device in devices if isinstance(device, dict)
+    matching_indexes = [
+        index
+        for index, existing in enumerate(devices)
+        if isinstance(existing, dict) and existing.get("name") == replace_name
+    ]
+    if replace_name is not None and len(matching_indexes) != 1:
+        raise ValueError(f"device profile to replace was not found: {replace_name!r}")
+    if replace_name is None and any(
+        existing.get("name") == name
+        for existing in devices
+        if isinstance(existing, dict)
     ):
         raise ValueError(f"duplicate device name: {name}")
 
@@ -186,6 +196,8 @@ def apply_device_draft(
     else:
         if selectors.transport != "evdev":
             raise ValueError("evdev trigger requires an evdev selector")
+        if selectors.classifier is not None:
+            device["input_classifier"] = selectors.classifier[0]
         device["mode"] = trigger.mode
         if trigger.mode == "on-off":
             device["on_events"] = _toml_array(trigger.on_events)
@@ -194,7 +206,10 @@ def apply_device_draft(
             device["toggle_events"] = _toml_array(trigger.toggle_events)
             device["toggle_off_timeout_seconds"] = trigger.toggle_off_timeout_seconds
 
-    devices.append(device)
+    if replace_name is None:
+        devices.append(device)
+    else:
+        devices[matching_indexes[0]] = device
 
 
 def _capture_baseline(

@@ -58,6 +58,29 @@ run `command -v ydotool`, check the configured daemon, and run
 operator-configured socket. For a clipboard wrapper, run `command -v wl-copy`
 and `command -v wl-paste`.
 
+For any path that uses `ydotool`, also verify the daemon's kernel-input access
+independently of Speech Note:
+
+```bash
+test -e /dev/uinput && getfacl -cp /dev/uinput
+systemctl --user restart ydotool.service
+systemctl --user --no-pager --full status ydotool.service
+ydotool type YDOTOOL_ACCESS_TEST
+```
+
+If `/dev/uinput` does not exist, load `uinput` and make it persistent. Run
+these privileged commands yourself:
+
+```bash
+sudo install -Dm0644 /dev/stdin /etc/modules-load.d/uinput.conf <<'EOF'
+uinput
+EOF
+sudo modprobe uinput
+```
+
+`ydotoold` needs effective `rw` access to `/dev/uinput`; the controller only
+needs read access to its configured input source.
+
 Only for `start-listening-active-window`: use the ydotool daemon and socket.
 Only for a wrapper that invokes `wl-copy` or `wl-paste`:
 use `wl-clipboard`.

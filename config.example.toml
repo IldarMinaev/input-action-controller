@@ -33,5 +33,6 @@
 # vendor_id = "1234"
 # product_id = "5678"
 # interface_number = "01"
+# input_classifier = "ID_INPUT_MOUSE"
 # toggle_events = ["BTN_SIDE"]
 # toggle_off_timeout_seconds = 60

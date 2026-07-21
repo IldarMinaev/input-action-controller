@@ -194,7 +194,8 @@ class ConfigurationGuideContractTests(unittest.TestCase):
         required = (
             "readable devices normally skip permission changes",
             "Create a managed permission rule for this readable device? [y/N/x]",
-            "removes broad rules and `input` group membership only after reconnect and action tests pass",
+            "removes obsolete selector-hashed rules for that exact profile",
+            "Remove broader external rules and `input` group membership only after reconnect and action tests pass",
             "[device-discovery guide](device-discovery.md)",
         )
         for value in required:
@@ -209,8 +210,8 @@ class DeviceDiscoveryContractTests(unittest.TestCase):
             "Composite evdev devices",
             "standard udev `ID_INPUT_*` classifier",
             "serial number or `ID_PATH`",
-            "selected classifier appears in the managed udev rule",
-            "not stored in the runtime profile",
+            "selected classifier appears in both the managed udev rule",
+            "input_classifier",
             "same capability-based resolver used by the daemon",
             "stops before saving",
             "does not identify the selected node uniquely",

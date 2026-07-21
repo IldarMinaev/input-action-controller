@@ -18,6 +18,7 @@ from input_action_controller.setup.permissions import (
     RenderedRule,
     ScopeReport,
     UnreadableManagedRule,
+    managed_rules_for_profile,
     render_rule,
     verify_reconnected_access,
 )
@@ -39,6 +40,7 @@ def candidate(
         "ID_VENDOR_ID": vendor_id,
         "ID_MODEL_ID": product_id,
         "DEVNAME": node,
+        "CURRENT_TAGS": ":seat:uaccess:",
     }
     if interface_number is not None:
         properties["ID_USB_INTERFACE_NUM"] = interface_number
@@ -131,7 +133,7 @@ class RuleRenderingTests(unittest.TestCase):
         )
         self.assertEqual(
             rendered.content,
-            'ACTION=="add", SUBSYSTEM=="hidraw", KERNEL=="hidraw*", '
+            'ACTION!="remove", SUBSYSTEM=="hidraw", KERNEL=="hidraw*", '
             'ATTRS{idVendor}=="047f", ATTRS{idProduct}=="c056", '
             'ENV{ID_USB_INTERFACE_NUM}=="03", '
             'ENV{ID_SERIAL_SHORT}=="SERIAL-1", TAG+="uaccess"\n',
@@ -142,7 +144,7 @@ class RuleRenderingTests(unittest.TestCase):
 
         self.assertEqual(
             rendered.content,
-            'ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", '
+            'ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", '
             'ATTRS{idVendor}=="1234", ATTRS{idProduct}=="5678", '
             'ENV{ID_USB_INTERFACE_NUM}=="01", '
             'ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:2:1.1", '
@@ -351,6 +353,51 @@ class PermissionTransactionTests(unittest.TestCase):
             runner,
             staging_directory=self.staging_directory,
             existing_rule_reader=existing_rule_reader,
+        )
+
+    def test_replaces_obsolete_rules_and_restores_the_complete_original_set(self):
+        runner = FakeRunner()
+        obsolete_a = self.rendered.destination.with_name(
+            self.rendered.destination.name.replace(
+                self.rendered.destination.stem.rsplit("-", 1)[1], "aaaaaaaaaaaa"
+            )
+        )
+        obsolete_b = self.rendered.destination.with_name(
+            self.rendered.destination.name.replace(
+                self.rendered.destination.stem.rsplit("-", 1)[1], "bbbbbbbbbbbb"
+            )
+        )
+        originals = {
+            obsolete_a: (b"old-a\n", 0o640),
+            obsolete_b: (b"old-b\n", 0o600),
+        }
+        transaction = PermissionTransaction(
+            self.rendered,
+            runner,
+            staging_directory=self.staging_directory,
+            existing_rule_reader=lambda path: originals.get(path),
+            obsolete_destinations=(obsolete_b, obsolete_a),
+        )
+
+        transaction.install()
+        installed_argv = [call.argv for call in runner.calls]
+        self.assertEqual(installed_argv[1], transaction._remove_command(obsolete_a))
+        self.assertEqual(installed_argv[2], transaction._remove_command(obsolete_b))
+        self.assertEqual(
+            installed_argv[3],
+            ("/usr/bin/sudo", "--", "/usr/bin/udevadm", "control", "--reload-rules"),
+        )
+
+        transaction.rollback()
+        rollback_argv = [call.argv for call in runner.calls[4:]]
+        self.assertEqual(rollback_argv[0][-1], str(obsolete_a))
+        self.assertEqual(rollback_argv[1][-1], str(obsolete_b))
+        self.assertEqual(
+            rollback_argv[2], transaction._remove_command(self.rendered.destination)
+        )
+        self.assertEqual(
+            rollback_argv[3],
+            ("/usr/bin/sudo", "--", "/usr/bin/udevadm", "control", "--reload-rules"),
         )
 
     def test_install_uses_fixed_absolute_argv_without_a_shell_and_stages_mode_0600(
@@ -671,6 +718,29 @@ class PermissionTransactionTests(unittest.TestCase):
                     self.transaction(FakeRunner(), rendered=rendered)
 
 
+class ManagedRuleDiscoveryTests(unittest.TestCase):
+    def test_finds_only_regular_rules_for_the_exact_profile_slug(self):
+        with TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            expected_name = render_rule(
+                "Desk button", evdev_selectors(), ()
+            ).destination.name
+            expected = directory / expected_name
+            expected.write_text("rule\n", encoding="utf-8")
+            (directory / expected_name.replace(".rules", "-extra.rules")).write_text(
+                "wrong\n", encoding="utf-8"
+            )
+            other_name = render_rule(
+                "Desk button 2", evdev_selectors(), ()
+            ).destination.name
+            (directory / other_name).write_text("other\n", encoding="utf-8")
+
+            self.assertEqual(
+                managed_rules_for_profile("Desk button", directory),
+                (expected.absolute(),),
+            )
+
+
 class ReconnectVerificationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.selectors = evdev_selectors(id_path=None)
@@ -740,7 +810,7 @@ class ReconnectVerificationTests(unittest.TestCase):
             )
 
     def test_requires_access_acl_and_production_resolution(self):
-        with self.assertRaisesRegex(ReconnectVerificationError, "read access"):
+        with self.assertRaisesRegex(ReconnectVerificationError, "read/write access"):
             verify_reconnected_access(
                 self.selectors,
                 previous_instance_ids=(),
@@ -749,6 +819,20 @@ class ReconnectVerificationTests(unittest.TestCase):
                     "sysfs-instance-new",
                 ),
                 access_checker=lambda _item: False,
+                acl_checker=lambda _item: True,
+                production_resolution_checker=lambda _item: True,
+            )
+
+        without_tag = self.matching_candidate("/dev/input/event9")
+        without_tag.properties.pop("CURRENT_TAGS")
+        with self.assertRaisesRegex(ReconnectVerificationError, "current uaccess tag"):
+            verify_reconnected_access(
+                self.selectors,
+                previous_instance_ids=(),
+                observe_after_udev_event=lambda: DeviceInstanceObservation(
+                    without_tag, "sysfs-instance-new"
+                ),
+                access_checker=lambda _item: True,
                 acl_checker=lambda _item: True,
                 production_resolution_checker=lambda _item: True,
             )

@@ -17,6 +17,15 @@ from tests.test_setup_session import FakePermissionTransaction, candidate
 
 
 class ConsoleSetupPromptsTests(unittest.TestCase):
+    def test_profile_operation_offers_add_and_exact_updates(self):
+        prompts, output = self.prompts("2\n")
+
+        result = prompts.choose_profile_operation(("Mouse button", "Headset"))
+
+        self.assertEqual(result, "Mouse button")
+        self.assertIn("1. Add a new profile", output.getvalue())
+        self.assertIn("2. Update Mouse button", output.getvalue())
+
     def prompts(self, input_text: str):
         output = StringIO()
         return (
@@ -302,6 +311,35 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
 
         self.assertEqual(draft.toggle_off_timeout_seconds, 0)
         self.assertIn("automatic off", output.getvalue())
+
+    def test_event_prompts_state_that_they_expect_a_number(self):
+        toggle_prompts, toggle_output = self.prompts("1\n1\n\n")
+        on_off_prompts, on_off_output = self.prompts("2\n1\n2\n")
+
+        toggle_prompts.choose_evdev_trigger(("BTN_SIDE",))
+        on_off_prompts.choose_evdev_trigger(("BTN_SIDE", "BTN_EXTRA"))
+
+        self.assertIn(
+            "Choose toggle event (enter a number from 1 to 1):",
+            toggle_output.getvalue(),
+        )
+        self.assertIn(
+            "Choose on event (enter a number from 1 to 2):",
+            on_off_output.getvalue(),
+        )
+        self.assertIn(
+            "Choose off event (enter a number from 1 to 2):",
+            on_off_output.getvalue(),
+        )
+
+    def test_declining_timeout_customization_preserves_supplied_default(self):
+        prompts, _output = self.prompts("1\n1\n\n")
+
+        draft = prompts.choose_evdev_trigger(
+            ("BTN_SIDE",), default_toggle_timeout_seconds=0
+        )
+
+        self.assertEqual(draft.toggle_off_timeout_seconds, 0)
 
     def test_nonnegative_number_rejects_nonfinite_values_before_accepting_finite_value(
         self,

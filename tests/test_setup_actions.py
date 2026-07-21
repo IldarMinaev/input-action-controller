@@ -2,9 +2,12 @@ import unittest
 
 import tomlkit
 
+from input_action_controller.models import ActionConfig
+
 from input_action_controller.setup.actions import (
     ActionCommandStyle,
     ActionDraft,
+    action_draft_from_config,
     apply_action_draft,
     parse_command_line,
 )
@@ -57,6 +60,24 @@ class ParseCommandLineTests(unittest.TestCase):
 
 
 class ActionDraftTests(unittest.TestCase):
+    def test_converts_existing_action_without_changing_policy(self):
+        configured = ActionConfig(
+            "voice",
+            ("tool", "on"),
+            ("tool", "off"),
+            skip_off_after_failed_on=True,
+            skip_on_after_failed_off=False,
+            off_on_shutdown=False,
+        )
+
+        draft = action_draft_from_config(configured)
+
+        self.assertEqual(draft.on_command, configured.on_command)
+        self.assertEqual(draft.off_command, configured.off_command)
+        self.assertTrue(draft.skip_off_after_failed_on)
+        self.assertFalse(draft.skip_on_after_failed_off)
+        self.assertFalse(draft.off_on_shutdown)
+
     def test_separate_commands_default_both_skip_policies_to_false(self):
         draft = ActionDraft("voice", ("tool", "on"), ("tool", "off"))
 

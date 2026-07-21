@@ -8,6 +8,8 @@ from typing import Callable
 
 import tomlkit
 
+from ..models import ActionConfig
+
 
 _SHELL_OPERATOR = re.compile(r"[;&|<>`]")
 _SHELL_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{|\()")
@@ -39,6 +41,17 @@ class ActionDraft:
             object.__setattr__(self, "skip_off_after_failed_on", toggle_command)
         if self.skip_on_after_failed_off is None:
             object.__setattr__(self, "skip_on_after_failed_off", toggle_command)
+
+
+def action_draft_from_config(action: ActionConfig) -> ActionDraft:
+    return ActionDraft(
+        name=action.name,
+        on_command=action.on_command,
+        off_command=action.off_command,
+        skip_off_after_failed_on=action.skip_off_after_failed_on,
+        skip_on_after_failed_off=action.skip_on_after_failed_off,
+        off_on_shutdown=action.off_on_shutdown,
+    )
 
 
 def parse_command_line(

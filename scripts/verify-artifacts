@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PACKAGE = ROOT / "src" / "input_action_controller"
 PACKAGE_NAME = "input-action-controller"
-PACKAGE_VERSION = "0.1.0-1"
+PACKAGE_VERSION = "0.1.1-1"
 RUNTIME_MODULES = {
     path.relative_to(SOURCE_PACKAGE).as_posix() for path in SOURCE_PACKAGE.rglob("*.py")
 }

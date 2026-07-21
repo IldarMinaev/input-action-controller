@@ -33,6 +33,8 @@ _PROPERTY_NAMES = (
     "ID_INPUT_MOUSE",
     "ID_INPUT_KEYBOARD",
     "ID_INPUT_JOYSTICK",
+    "CURRENT_TAGS",
+    "TAGS",
     "DEVNAME",
 ) + INPUT_CLASSIFIER_NAMES
 
@@ -137,6 +139,12 @@ def _matches_identity(profile: DeviceProfile, candidate: DeviceCandidate) -> boo
     ):
         return False
     if profile.id_path is not None and properties.get("ID_PATH") != profile.id_path:
+        return False
+    if (
+        isinstance(profile, EvdevProfile)
+        and profile.input_classifier is not None
+        and properties.get(profile.input_classifier) != "1"
+    ):
         return False
     return True
 

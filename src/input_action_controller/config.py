@@ -5,6 +5,7 @@ import re
 import tomllib
 from typing import Any, Mapping
 
+from .devices.classifiers import INPUT_CLASSIFIER_NAMES
 from .models import (
     ActionConfig,
     AppConfig,
@@ -48,6 +49,7 @@ _COMMON_DEVICE_KEYS = frozenset(
 )
 _HIDRAW_KEYS = _COMMON_DEVICE_KEYS | {"on_reports", "off_reports"}
 _EVDEV_KEYS = _COMMON_DEVICE_KEYS | {
+    "input_classifier",
     "on_events",
     "off_events",
     "toggle_events",
@@ -220,6 +222,9 @@ def _parse_hidraw(device: Mapping[str, Any], context: str) -> HidrawProfile:
 def _parse_evdev(device: Mapping[str, Any], context: str) -> EvdevProfile:
     mode = _nonempty_string(_required(device, "mode", context), f"{context}.mode")
     selectors = _parse_selectors(device, context)
+    input_classifier = _input_classifier(
+        device.get("input_classifier"), f"{context}.input_classifier"
+    )
 
     if mode == "on-off":
         _reject_present(
@@ -236,6 +241,7 @@ def _parse_evdev(device: Mapping[str, Any], context: str) -> EvdevProfile:
         return EvdevProfile(
             **selectors,
             mode=mode,
+            input_classifier=input_classifier,
             on_events=on_events,
             off_events=off_events,
         )
@@ -253,11 +259,21 @@ def _parse_evdev(device: Mapping[str, Any], context: str) -> EvdevProfile:
         return EvdevProfile(
             **selectors,
             mode=mode,
+            input_classifier=input_classifier,
             toggle_events=toggle_events,
             toggle_off_timeout_seconds=timeout,
         )
 
     raise ConfigError(f"{context}.mode must be 'on-off' or 'toggle' for evdev")
+
+
+def _input_classifier(value: Any, context: str) -> str | None:
+    if value is None:
+        return None
+    classifier = _nonempty_string(value, context)
+    if classifier not in INPUT_CLASSIFIER_NAMES:
+        raise ConfigError(f"{context} is not a supported ID_INPUT_* classifier")
+    return classifier
 
 
 def _parse_selectors(device: Mapping[str, Any], context: str) -> dict[str, str | None]:
