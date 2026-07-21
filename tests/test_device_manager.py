@@ -11,6 +11,7 @@ from input_action_controller.models import (
     DeviceStrategy,
     HidrawProfile,
 )
+from tests.helpers.setup import FakeDiscovery
 
 
 def profile(name: str, vendor_id: str, *, action: str = "voice") -> HidrawProfile:
@@ -36,19 +37,6 @@ def available(profile: HidrawProfile, node: str) -> DeviceCandidate:
         event_codes=frozenset(),
         keyboard_class=False,
     )
-
-
-class FakeDiscovery:
-    def __init__(self, candidates=()):
-        self.candidates = tuple(candidates)
-        self.calls = 0
-
-    def enumerate(self):
-        self.calls += 1
-        return self.candidates
-
-    def set(self, *candidates):
-        self.candidates = tuple(candidates)
 
 
 class FakeObserver:

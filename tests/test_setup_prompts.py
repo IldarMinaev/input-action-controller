@@ -8,12 +8,13 @@ import unittest
 import tomlkit
 
 from input_action_controller.setup.config_editor import BackupInfo
+from input_action_controller.setup.devices import SelectorDraft
 from input_action_controller.setup.permissions import render_rule
 from input_action_controller.setup.permissions import INPUT_GROUP_ACCESS
 from input_action_controller.setup.prompts import ConsoleSetupPrompts
 from input_action_controller.setup.service import ServiceChoice, ServiceSnapshot
 from input_action_controller.setup.session import SetupCancelled, SetupExitRequested
-from tests.test_setup_session import FakePermissionTransaction, candidate
+from tests.helpers.setup import FakePermissionTransaction, candidate
 
 
 class ConsoleSetupPromptsTests(unittest.TestCase):
@@ -36,6 +37,25 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
             ),
             output,
         )
+
+    def permission_transaction(self, *, keyboard_class: bool = False):
+        selected = candidate(
+            "/dev/input/event4",
+            readable=False,
+            keyboard_class=keyboard_class,
+        )
+        rendered = render_rule(
+            "Keyboard button",
+            SelectorDraft(
+                transport="evdev",
+                vendor_id="1234",
+                product_id="5678",
+                interface_number="01",
+                classifier=("ID_INPUT_MOUSE", "1"),
+            ),
+            (selected,),
+        )
+        return rendered, FakePermissionTransaction(rendered)
 
     def test_action_entry_displays_exact_argv_arrays(self):
         prompts, output = self.prompts(
@@ -63,26 +83,7 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
         )
 
     def test_permission_review_shows_rule_scope_commands_and_defaults_sudo_to_no(self):
-        selected = candidate(
-            "/dev/input/event4",
-            readable=False,
-            keyboard_class=False,
-        )
-        rendered = render_rule(
-            "Keyboard button",
-            __import__(
-                "input_action_controller.setup.devices",
-                fromlist=["SelectorDraft"],
-            ).SelectorDraft(
-                transport="evdev",
-                vendor_id="1234",
-                product_id="5678",
-                interface_number="01",
-                classifier=("ID_INPUT_MOUSE", "1"),
-            ),
-            (selected,),
-        )
-        transaction = FakePermissionTransaction(rendered)
+        rendered, transaction = self.permission_transaction()
         prompts, output = self.prompts("n\n")
 
         result = prompts.confirm_permission("Keyboard button", transaction)
@@ -100,26 +101,7 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
         )
 
     def test_permission_review_shows_sudo_prompt_once_for_approved_keyboard_scope(self):
-        selected = candidate(
-            "/dev/input/event4",
-            readable=False,
-            keyboard_class=True,
-        )
-        rendered = render_rule(
-            "Keyboard button",
-            __import__(
-                "input_action_controller.setup.devices",
-                fromlist=["SelectorDraft"],
-            ).SelectorDraft(
-                transport="evdev",
-                vendor_id="1234",
-                product_id="5678",
-                interface_number="01",
-                classifier=("ID_INPUT_MOUSE", "1"),
-            ),
-            (selected,),
-        )
-        transaction = FakePermissionTransaction(rendered)
+        _rendered, transaction = self.permission_transaction(keyboard_class=True)
         prompts, output = self.prompts("Keyboard button\ny\n")
 
         result = prompts.confirm_permission("Keyboard button", transaction)
@@ -131,26 +113,7 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
         )
 
     def test_permission_review_shows_no_sudo_prompt_for_rejected_keyboard_scope(self):
-        selected = candidate(
-            "/dev/input/event4",
-            readable=False,
-            keyboard_class=True,
-        )
-        rendered = render_rule(
-            "Keyboard button",
-            __import__(
-                "input_action_controller.setup.devices",
-                fromlist=["SelectorDraft"],
-            ).SelectorDraft(
-                transport="evdev",
-                vendor_id="1234",
-                product_id="5678",
-                interface_number="01",
-                classifier=("ID_INPUT_MOUSE", "1"),
-            ),
-            (selected,),
-        )
-        transaction = FakePermissionTransaction(rendered)
+        _rendered, transaction = self.permission_transaction(keyboard_class=True)
         prompts, output = self.prompts("wrong\n")
 
         result = prompts.confirm_permission("Keyboard button", transaction)
@@ -189,24 +152,29 @@ class ConsoleSetupPromptsTests(unittest.TestCase):
         self.assertIn("Enter y/yes, n/no, or x to cancel.\n", output.getvalue())
         self.assertEqual(output.getvalue().count("[y/N/x] "), 2)
 
-    def test_confirmation_accepts_case_insensitive_no(self):
-        prompts, _output = self.prompts("NO\n")
-
-        result = prompts.confirm_managed_permission(
-            "Desk button",
-            candidate("/dev/input/event4"),
+    def test_confirmation_accepts_case_insensitive_no_or_exit(self):
+        cases = (
+            ("NO\n", False, None),
+            ("X\n", None, SetupExitRequested),
         )
 
-        self.assertFalse(result)
-
-    def test_confirmation_x_requests_setup_exit(self):
-        prompts, _output = self.prompts("X\n")
-
-        with self.assertRaisesRegex(SetupExitRequested, "Cancelled by user"):
-            prompts.confirm_managed_permission(
-                "Desk button",
-                candidate("/dev/input/event4"),
-            )
+        for input_text, expected, error_type in cases:
+            with self.subTest(input=input_text.strip()):
+                prompts, _output = self.prompts(input_text)
+                if error_type is None:
+                    self.assertEqual(
+                        prompts.confirm_managed_permission(
+                            "Desk button",
+                            candidate("/dev/input/event4"),
+                        ),
+                        expected,
+                    )
+                else:
+                    with self.assertRaisesRegex(error_type, "Cancelled by user"):
+                        prompts.confirm_managed_permission(
+                            "Desk button",
+                            candidate("/dev/input/event4"),
+                        )
 
     def test_exact_profile_name_approval_has_no_yes_no_suffix(self):
         prompts, output = self.prompts("Desk button\n")

@@ -10,6 +10,7 @@ CONFIG_GUIDE = ROOT / "docs" / "configuration.md"
 DEVICE_GUIDE = ROOT / "docs" / "device-discovery.md"
 HANDY_GUIDE = ROOT / "docs" / "examples" / "handy-gnome-wayland.md"
 DSNOTE_GUIDE = ROOT / "docs" / "examples" / "dsnote-gnome-wayland.md"
+MAINTAINER_GUIDE = ROOT / "docs" / "maintaining.md"
 
 
 def read(path: Path) -> str:
@@ -36,6 +37,7 @@ class ReadmeContractTests(unittest.TestCase):
     def test_documents_the_quick_start_and_reference_guides(self):
         content = read(README)
         required = (
+            "yay -S input-action-controller",
             "./scripts/makepkg -si",
             "input-action-controller setup",
             "input-action-controller config-check",
@@ -46,6 +48,7 @@ class ReadmeContractTests(unittest.TestCase):
             "[device-discovery guide](docs/device-discovery.md)",
             "[Handy GNOME Wayland guide](docs/examples/handy-gnome-wayland.md)",
             "[Speech Note GNOME Wayland guide](docs/examples/dsnote-gnome-wayland.md)",
+            "[maintainer guide](docs/maintaining.md)",
         )
         for value in required:
             with self.subTest(value=value):
@@ -62,6 +65,7 @@ class ReadmeContractTests(unittest.TestCase):
             "## Run the service",
             "journalctl --user -u input-action-controller.service",
             "## Upgrade",
+            "yay -Syu input-action-controller",
             "systemctl --user restart input-action-controller.service",
             "## Remove",
             "sudo pacman -R input-action-controller",
@@ -70,6 +74,14 @@ class ReadmeContractTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, content)
+
+    def test_documents_aur_and_source_installation_as_separate_paths(self):
+        content = read(README)
+        self.assertIn(
+            "https://aur.archlinux.org/packages/input-action-controller", content
+        )
+        self.assertIn("### Build from source", content)
+        self.assertIn("makepkg", content)
 
     def test_uses_input_modes_rather_than_action_types(self):
         content = read(README)
@@ -82,6 +94,25 @@ class ReadmeContractTests(unittest.TestCase):
             "Package removal does not remove your XDG configuration.",
             "config_home=${XDG_CONFIG_HOME:-$HOME/.config}/input-action-controller",
             'rm -r "$config_home"',
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, content)
+
+
+class MaintainerGuideContractTests(unittest.TestCase):
+    def test_documents_dependency_updates_releases_and_aur_publication(self):
+        content = " ".join(read(MAINTAINER_GUIDE).split())
+        required = (
+            "Renovate GitHub App",
+            "Dependency Dashboard",
+            "requirements-ci.txt",
+            "GitHub Actions",
+            "scripts/public-release verify-tree .",
+            "signed annotated tag",
+            "GitHub release",
+            "input-action-controller-aur",
+            "git push aur master",
         )
         for value in required:
             with self.subTest(value=value):

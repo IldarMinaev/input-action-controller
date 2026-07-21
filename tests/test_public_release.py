@@ -26,7 +26,6 @@ PUBLIC_RELEASE_SPEC.loader.exec_module(public_release)
 
 
 REQUIRED_FIXTURE_FILES = (
-    ".github/dependabot.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     ".gitignore",
@@ -36,11 +35,13 @@ REQUIRED_FIXTURE_FILES = (
     "config.example.toml",
     "docs/configuration.md",
     "docs/device-discovery.md",
+    "docs/maintaining.md",
     "docs/examples/dsnote-gnome-wayland.md",
     "docs/examples/handy-gnome-wayland.md",
     "packaging/input-action-controller.service",
     "pyproject.toml",
     "requirements-ci.txt",
+    "renovate.json",
     "scripts/makepkg",
     "scripts/public-release",
     "scripts/verify-artifacts",
