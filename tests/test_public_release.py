@@ -44,6 +44,7 @@ REQUIRED_FIXTURE_FILES = (
     "renovate.json",
     "scripts/makepkg",
     "scripts/public-release",
+    "scripts/update-aur-package",
     "scripts/verify-artifacts",
     "src/input_action_controller/__init__.py",
     "tests/test_example.py",

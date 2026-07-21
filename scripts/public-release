@@ -33,6 +33,7 @@ PUBLIC_REPOSITORY_FILES = {
     "renovate.json",
     "scripts/makepkg",
     "scripts/public-release",
+    "scripts/update-aur-package",
     "scripts/verify-artifacts",
 }
 ALLOWED_PREFIXES = ("src/input_action_controller/", "tests/")

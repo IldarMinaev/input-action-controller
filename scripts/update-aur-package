@@ -1,0 +1,70 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+if (( $# < 1 || $# > 2 )); then
+  printf 'usage: %s VERSION [AUR_CHECKOUT]\n' "$0" >&2
+  exit 2
+fi
+
+version=${1#v}
+if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  printf 'invalid release version: %s\n' "$1" >&2
+  exit 2
+fi
+
+project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+aur_root=${2:-"$project_root/../input-action-controller-aur"}
+if [[ ! -f $aur_root/PKGBUILD || ! -f $aur_root/.SRCINFO ]]; then
+  printf 'not an input-action-controller AUR checkout: %s\n' "$aur_root" >&2
+  exit 2
+fi
+
+repository=https://github.com/IldarMinaev/input-action-controller
+archive_url="$repository/archive/refs/tags/v$version.tar.gz"
+temporary=$(mktemp -d)
+trap 'rm -rf "$temporary"' EXIT
+
+archive="$temporary/input-action-controller-$version.tar.gz"
+curl --fail --location --silent --show-error "$archive_url" --output "$archive"
+tar -xzf "$archive" -C "$temporary"
+
+upstream="$temporary/input-action-controller-$version/PKGBUILD"
+if [[ ! -f $upstream ]]; then
+  printf 'release archive does not contain PKGBUILD: %s\n' "$archive_url" >&2
+  exit 1
+fi
+
+upstream_version=$(sed -n 's/^pkgver=//p' "$upstream")
+if [[ $upstream_version != "$version" ]]; then
+  printf 'release PKGBUILD has pkgver=%s, expected %s\n' \
+    "${upstream_version:-<missing>}" "$version" >&2
+  exit 1
+fi
+
+checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
+maintainer=$(sed -n '1p' "$aur_root/PKGBUILD")
+generated="$temporary/PKGBUILD"
+source_pattern="^source=(\"\$pkgname-\$pkgver.tar.gz\")$"
+aur_source="source=(\"\$pkgname-\$pkgver.tar.gz::\$url/archive/refs/tags/v\$pkgver.tar.gz\")"
+{
+  printf '%s\n' "$maintainer"
+  tail -n +2 "$upstream"
+} > "$generated"
+
+sed -i \
+  -e "s|$source_pattern|$aur_source|" \
+  -e "s/^sha256sums=('SKIP')$/sha256sums=('$checksum')/" \
+  "$generated"
+
+grep -Fqx "$aur_source" "$generated"
+grep -Fqx "sha256sums=('$checksum')" "$generated"
+
+install -m 0644 "$generated" "$aur_root/PKGBUILD"
+(
+  cd "$aur_root"
+  makepkg --printsrcinfo > .SRCINFO
+  makepkg --cleanbuild --force
+)
+
+printf 'Updated AUR checkout at %s to %s. Review the diff before committing.\n' \
+  "$aur_root" "$version"

@@ -42,16 +42,25 @@ recreate a tag only when no external user can depend on it.
 
 ## AUR publication
 
-The `input-action-controller-aur` GitHub mirror prepares package updates. Its workflow opens a pull request after a new
-GitHub release appears. Review the version, source URL, checksum, `.SRCINFO`, and clean package build before merging.
-
-The mirror does not push to AUR. Publish an approved update from the mirror checkout:
+Keep the AUR Git checkout next to the project checkout. After the GitHub release succeeds, update and build the AUR
+package from the project repository:
 
 ```bash
-git switch master
-git pull --ff-only origin master
-git push aur master
+./scripts/update-aur-package X.Y.Z ../input-action-controller-aur
 ```
 
-Configure `origin` as the GitHub mirror and `aur` as
-`ssh://aur@aur.archlinux.org/input-action-controller.git`. Verify the package page after every push.
+The script downloads the release archive, imports its `PKGBUILD`, configures the AUR source URL and checksum,
+regenerates `.SRCINFO`, and runs a clean package build. It does not commit or publish anything.
+
+Review and publish from the AUR checkout:
+
+```bash
+cd ../input-action-controller-aur
+git diff -- PKGBUILD .SRCINFO
+git add PKGBUILD .SRCINFO
+git commit -S -m "Update to X.Y.Z"
+git push origin master
+```
+
+Verify the AUR package page after every push. The AUR repository contains only package metadata; keep the update script
+and maintenance documentation in this project.

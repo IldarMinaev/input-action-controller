@@ -26,6 +26,7 @@ source_paths=(
   renovate.json
   scripts/makepkg
   scripts/public-release
+  scripts/update-aur-package
   scripts/verify-artifacts
   src
   tests
