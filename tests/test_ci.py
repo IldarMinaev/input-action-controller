@@ -71,7 +71,7 @@ class ContinuousIntegrationTests(unittest.TestCase):
         self.assertIn('      - "v*"', content)
         self.assertIn("uses: ./.github/workflows/ci.yml", content)
         ci_content = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('branches:\n      - "**"', ci_content)
+        self.assertIn("branches:\n      - main", ci_content)
         self.assertIn("workflow_call:", ci_content)
         self.assertNotIn("workflow_dispatch:", content)
 
