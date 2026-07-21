@@ -58,28 +58,34 @@ run `command -v ydotool`, check the configured daemon, and run
 operator-configured socket. For a clipboard wrapper, run `command -v wl-copy`
 and `command -v wl-paste`.
 
-For any path that uses `ydotool`, also verify the daemon's kernel-input access
-independently of Speech Note:
+For any path that uses `ydotool`, configure persistent access to `/dev/uinput`.
+Review and run these privileged commands yourself:
 
 ```bash
-test -e /dev/uinput && getfacl -cp /dev/uinput
-systemctl --user restart ydotool.service
-systemctl --user --no-pager --full status ydotool.service
-ydotool type YDOTOOL_ACCESS_TEST
+printf '%s\n' \
+  'ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess"' \
+  > /tmp/70-uinput-uaccess.rules
+sudo install -m 0644 /tmp/70-uinput-uaccess.rules \
+  /etc/udev/rules.d/70-uinput-uaccess.rules
+printf '%s\n' uinput | sudo tee /etc/modules-load.d/uinput.conf >/dev/null
+sudo udevadm control --reload-rules
+if [[ -e /sys/class/misc/uinput ]]; then
+  sudo udevadm trigger --action=change \
+    --subsystem-match=misc --sysname-match=uinput
+else
+  sudo modprobe uinput
+fi
+sudo udevadm settle
+getfacl -cp /dev/uinput
+test -r /dev/uinput && test -w /dev/uinput
+systemctl --user enable --now ydotool.service
+ydotool type 'YDOTOOL_UACCESS_TEST'
 ```
 
-If `/dev/uinput` does not exist, load `uinput` and make it persistent. Run
-these privileged commands yourself:
-
-```bash
-sudo install -Dm0644 /dev/stdin /etc/modules-load.d/uinput.conf <<'EOF'
-uinput
-EOF
-sudo modprobe uinput
-```
-
-`ydotoold` needs effective `rw` access to `/dev/uinput`; the controller only
-needs read access to its configured input source.
+Reload rules before the first module load. If the module is already loaded, the
+targeted change event applies the new rule to the existing device. `ydotoold`
+needs effective `rw` access to `/dev/uinput`; the controller only needs read
+access to its configured input source.
 
 Only for `start-listening-active-window`: use the ydotool daemon and socket.
 Only for a wrapper that invokes `wl-copy` or `wl-paste`:

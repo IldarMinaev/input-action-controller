@@ -202,7 +202,7 @@ def verify_reconnected_access(
     access_checker: AccessChecker,
     acl_checker: AclChecker,
     production_resolution_checker: ProductionResolutionChecker,
-    access: str = UACCESS,
+    access: str | None = UACCESS,
     group_mode_checker: GroupModeChecker | None = None,
 ) -> DeviceCandidate:
     """Require a new event instance, mode-specific access, and production resolution."""
@@ -235,7 +235,7 @@ def verify_reconnected_candidate(
     access_checker: AccessChecker,
     acl_checker: AclChecker,
     production_resolution_checker: ProductionResolutionChecker,
-    access: str = UACCESS,
+    access: str | None = UACCESS,
     group_mode_checker: GroupModeChecker | None = None,
 ) -> DeviceCandidate:
     """Require selector, access, and provisional-resolution checks for one new node."""
@@ -268,7 +268,7 @@ def verify_reconnected_candidate(
             raise ReconnectVerificationError(
                 f"New node {candidate.node} does not have the expected input-group mode."
             )
-    else:
+    elif access is not None:
         raise ValueError(f"unsupported udev access mode {access!r}")
     if not production_resolution_checker(candidate):
         raise ReconnectVerificationError(
@@ -360,6 +360,27 @@ class PermissionTransaction:
     def destination_write_succeeded(self) -> bool:
         """Whether the privileged destination write command returned successfully."""
         return self._destination_write_succeeded
+
+    @property
+    def destination_changed(self) -> bool:
+        """Whether rollback may still be required for the managed destination."""
+        return self._destination_changed
+
+    @property
+    def previous_access(self) -> str | None:
+        """Return the unambiguous access policy restored by rollback."""
+        if not self._prepared:
+            raise RuntimeError("Permission transaction has not been prepared.")
+        policies = set()
+        for existing in self._original_rules.values():
+            if existing is None:
+                continue
+            content = existing[0]
+            if b'TAG+="uaccess"' in content:
+                policies.add(UACCESS)
+            if b'GROUP="input"' in content and b'MODE="0660"' in content:
+                policies.add(INPUT_GROUP_ACCESS)
+        return next(iter(policies)) if len(policies) == 1 else None
 
     def install(self) -> None:
         if self._finalized:

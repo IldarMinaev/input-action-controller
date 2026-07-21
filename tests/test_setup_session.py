@@ -292,6 +292,7 @@ class FakePermissionTransaction:
         reload_error: Exception | None = None,
         rollback_error: Exception | None = None,
         finalize_error: Exception | None = None,
+        previous_access: str | None = None,
     ):
         self.rendered = rendered
         self.obsolete_destinations: tuple[Path, ...] = ()
@@ -302,6 +303,7 @@ class FakePermissionTransaction:
         self.reload_error = reload_error
         self.rollback_error = rollback_error
         self.finalize_error = finalize_error
+        self.previous_access = previous_access
         self.prepared = False
         self.install_started = False
         self.destination_write_succeeded = False
@@ -325,6 +327,10 @@ class FakePermissionTransaction:
             if self.install_started and not self.rolled_back
             else None
         )
+
+    @property
+    def destination_changed(self):
+        return self.install_started and not self.rolled_back
 
     def prepare(self):
         self.prepared = True
@@ -370,6 +376,7 @@ class FakePermissionFactory:
         rollback_error: Exception | None = None,
         finalize_error: Exception | None = None,
         obsolete_destinations: tuple[Path, ...] = (),
+        previous_access: str | None = None,
     ):
         self.reconnected = reconnected
         self.events = events
@@ -379,6 +386,7 @@ class FakePermissionFactory:
         self.rollback_error = rollback_error
         self.finalize_error = finalize_error
         self.obsolete_destinations = obsolete_destinations
+        self.previous_access = previous_access
         self.transaction: FakePermissionTransaction | None = None
         self.create_calls = []
         self.snapshot_calls = []
@@ -419,6 +427,7 @@ class FakePermissionFactory:
             reload_error=self.reload_error,
             rollback_error=self.rollback_error,
             finalize_error=self.finalize_error,
+            previous_access=self.previous_access,
         )
         self.transaction.obsolete_destinations = self.obsolete_destinations
         return self.transaction
@@ -984,6 +993,12 @@ class SetupSessionTests(unittest.TestCase):
             encoding="utf-8",
         )
         selected = candidate("/dev/input/event4")
+        sibling = candidate(
+            "/dev/input/event5",
+            event_names=("KEY_A",),
+            keyboard_class=True,
+            input_classifiers=(("ID_INPUT_KEYBOARD", "1"),),
+        )
         events: list[str] = []
 
         class UpdatePrompts(FakePrompts):
@@ -1002,6 +1017,7 @@ class SetupSessionTests(unittest.TestCase):
         permissions = FakePermissionFactory(
             selected,
             events=events,
+            previous_access=INPUT_GROUP_ACCESS,
         )
 
         result, _service, _permissions = self.run_session(
@@ -1021,11 +1037,15 @@ class SetupSessionTests(unittest.TestCase):
                 )
             ),
             permission_factory=permissions,
+            candidates=(selected, sibling),
         )
 
         self.assertEqual(result, 0)
         self.assertEqual(len(permissions.monitor_calls), 2)
         self.assertEqual(len(permissions.verify_calls), 2)
+        rollback_selectors, _monitor, rollback_access = permissions.verify_calls[1]
+        self.assertIsNone(rollback_selectors.classifier)
+        self.assertEqual(rollback_access, INPUT_GROUP_ACCESS)
         rollback_index = events.index("permission.rollback")
         self.assertEqual(events[rollback_index - 1], "permission.monitor")
         self.assertEqual(
@@ -2036,7 +2056,7 @@ class SetupSessionTests(unittest.TestCase):
         assert editor.transaction is not None
         self.assertIn(editor.transaction, prompts.recovery_failure_transactions)
 
-    def test_approved_permission_install_failure_preserves_recovery_material_without_rollback(
+    def test_approved_permission_install_failure_rolls_back_uncertain_destination(
         self,
     ):
         selected = candidate("/dev/input/event4", readable=False)
@@ -2073,12 +2093,9 @@ class SetupSessionTests(unittest.TestCase):
         assert permissions.transaction is not None
         self.assertTrue(permissions.transaction.install_started)
         self.assertFalse(permissions.transaction.destination_write_succeeded)
-        self.assertFalse(permissions.transaction.rolled_back)
+        self.assertTrue(permissions.transaction.rolled_back)
         self.assertEqual(service.restore_calls, [service.original])
-        self.assertIn(
-            permissions.transaction.recovery_command_lines,
-            prompts.manual_permission,
-        )
+        self.assertEqual(prompts.manual_permission, [])
 
     def test_reload_failure_after_a_confirmed_permission_write_rolls_back(self):
         selected = candidate("/dev/input/event4", readable=False)

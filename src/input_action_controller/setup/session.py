@@ -39,7 +39,7 @@ from .permissions import (
     managed_rules_for_profile,
     verify_reconnected_candidate,
 )
-from .profiles import compatible_profiles
+from .profiles import compatible_profiles, selector_draft_from_profile
 from .service import ServiceChoice, ServiceSnapshot
 
 
@@ -213,7 +213,7 @@ class SetupPermissionFactory:
         selectors: SelectorDraft,
         reconnect_monitor: ReconnectMonitor,
         *,
-        access: str = UACCESS,
+        access: str | None = UACCESS,
     ) -> DeviceCandidate:
         deadline = self._monotonic() + self._reconnect_timeout_seconds
         observed_matching_remove = False
@@ -495,11 +495,15 @@ class SetupSession:
                     candidates,
                     **create_kwargs,
                 )
-                permission_transaction.rollback_verification = (selectors, access)
                 permission_transaction.rollback_reconnect_required = (
                     replace_name is not None
                 )
                 permission_transaction.prepare()
+                if existing_profile is not None:
+                    permission_transaction.rollback_verification = (
+                        selector_draft_from_profile(existing_profile),
+                        permission_transaction.previous_access,
+                    )
                 if not self._dependencies.prompts.confirm_permission(
                     profile_name,
                     permission_transaction,
@@ -515,15 +519,9 @@ class SetupSession:
                 )
                 try:
                     permission_transaction.install()
-                except Exception as error:
-                    if permission_transaction.destination_write_succeeded:
+                except Exception:
+                    if permission_transaction.destination_changed:
                         permission_installed = True
-                    else:
-                        self._dependencies.prompts.report_recovery_failure(
-                            "permission",
-                            error,
-                            permission_transaction,
-                        )
                     raise
                 permission_installed = True
                 self._dependencies.prompts.show_reconnect_instruction(
@@ -704,6 +702,9 @@ class SetupSession:
                     events = capture_evdev_presses(
                         stream,
                         timeout_seconds=EVDEV_CAPTURE_TIMEOUT_SECONDS,
+                        clock=getattr(
+                            self._dependencies.capture_factory, "clock", time
+                        ),
                     )
                     prompt_options = {}
                     if (

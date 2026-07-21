@@ -256,6 +256,7 @@ selector:
 | `interface_number` | `ENV{ID_USB_INTERFACE_NUM}` |
 | `serial` | `ENV{ID_SERIAL_SHORT}` |
 | `id_path` | `ENV{ID_PATH}` |
+| `input_classifier` | `ENV{ID_INPUT_*}` |
 
 Compare each configured value with `udevadm info --query=property` and
 `udevadm info --attribute-walk`. If a
@@ -298,9 +299,13 @@ rule_file=$(mktemp)
 printf '%s%s%s\n' \
   'ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*"' \
   ', ATTRS{idVendor}=="1234", ATTRS{idProduct}=="5678"' \
-  ', ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"' >"$rule_file"
+  ', ENV{ID_USB_INTERFACE_NUM}=="01", ENV{ID_INPUT_MOUSE}=="1"' \
+  ', TAG+="uaccess"' >"$rule_file"
 cat "$rule_file"
 ```
+
+Replace `ID_INPUT_MOUSE` with the exact `input_classifier` stored in the
+profile. Omit that clause only when the profile has no classifier.
 
 Inspect the generated rule and compare every match with the TOML profile.
 Continue only when none is missing or

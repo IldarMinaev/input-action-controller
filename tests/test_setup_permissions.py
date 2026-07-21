@@ -17,6 +17,7 @@ from input_action_controller.setup.permissions import (
     ReconnectVerificationError,
     RenderedRule,
     ScopeReport,
+    UACCESS,
     UnreadableManagedRule,
     managed_rules_for_profile,
     render_rule,
@@ -619,6 +620,27 @@ class PermissionTransactionTests(unittest.TestCase):
             ),
         )
 
+    def test_prepared_transaction_reports_the_restored_access_contract(self):
+        cases = (
+            (b'ACTION!="remove", TAG+="uaccess"\n', UACCESS),
+            (b'ACTION!="remove", GROUP="input", MODE="0660"\n', INPUT_GROUP_ACCESS),
+            (None, None),
+        )
+
+        for existing_content, expected in cases:
+            with self.subTest(expected=expected):
+                existing = (
+                    None if existing_content is None else (existing_content, 0o644)
+                )
+                transaction = self.transaction(
+                    FakeRunner(),
+                    existing_rule_reader=lambda _path, value=existing: value,
+                )
+
+                transaction.prepare()
+
+                self.assertEqual(transaction.previous_access, expected)
+
     def test_failed_rollback_retains_staging_and_exact_recovery_commands(self):
         runner = FakeRunner(fail_calls={3})
         transaction = self.transaction(runner)
@@ -742,6 +764,24 @@ class ManagedRuleDiscoveryTests(unittest.TestCase):
 
 
 class ReconnectVerificationTests(unittest.TestCase):
+    def test_unknown_prior_policy_verifies_effective_access_without_mode_claims(self):
+        selected = candidate("/dev/input/event4", subsystem="input")
+
+        result = verify_reconnected_access(
+            SelectorDraft("evdev", "047f", "c056", "03"),
+            previous_instance_ids=(),
+            observe_after_udev_event=lambda: DeviceInstanceObservation(
+                selected, "new-instance"
+            ),
+            access_checker=lambda _candidate: True,
+            acl_checker=lambda _candidate: self.fail("ACL policy is unknown"),
+            group_mode_checker=lambda _candidate: self.fail("group policy is unknown"),
+            production_resolution_checker=lambda _candidate: True,
+            access=None,
+        )
+
+        self.assertEqual(result, selected)
+
     def setUp(self) -> None:
         self.selectors = evdev_selectors(id_path=None)
 

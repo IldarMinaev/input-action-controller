@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from ..devices.discovery import DeviceCandidate
 from ..models import DeviceProfile, EvdevProfile, HidrawProfile
+from .devices import SelectorDraft
 
 
 def compatible_profiles(
@@ -12,6 +13,24 @@ def compatible_profiles(
 ) -> tuple[DeviceProfile, ...]:
     """Return profiles whose persisted identity accepts the selected node."""
     return tuple(profile for profile in profiles if _matches(profile, candidate))
+
+
+def selector_draft_from_profile(profile: DeviceProfile) -> SelectorDraft:
+    """Return the persisted identity used by an existing profile."""
+    return SelectorDraft(
+        transport="evdev" if isinstance(profile, EvdevProfile) else "hidraw",
+        vendor_id=profile.vendor_id,
+        product_id=profile.product_id,
+        interface_number=profile.interface_number,
+        serial=profile.serial,
+        id_path=profile.id_path,
+        classifier=(
+            (profile.input_classifier, "1")
+            if isinstance(profile, EvdevProfile)
+            and profile.input_classifier is not None
+            else None
+        ),
+    )
 
 
 def _matches(profile: DeviceProfile, candidate: DeviceCandidate) -> bool:

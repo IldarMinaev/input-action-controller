@@ -36,6 +36,22 @@ class FakeEvdevStream:
         return self.events.pop(0)
 
 
+class TimedEvdevStream:
+    def __init__(self, clock: "FakeClock", delays: list[float]):
+        self.clock = clock
+        self.delays = delays
+        self.timeouts: list[float] = []
+
+    def read(self, timeout_seconds: float) -> RawEvdevEvent | None:
+        self.timeouts.append(timeout_seconds)
+        delay = self.delays.pop(0)
+        if delay >= timeout_seconds:
+            self.clock.advance(timeout_seconds)
+            return None
+        self.clock.advance(delay)
+        return RawEvdevEvent(ecodes.EV_KEY, ecodes.BTN_SIDE, 1)
+
+
 @dataclass
 class FakeClock:
     now: float = 0.0
@@ -135,10 +151,24 @@ class EvdevCaptureTests(unittest.TestCase):
             ]
         )
 
-        names = capture_evdev_presses(stream, timeout_seconds=2.5)
+        names = capture_evdev_presses(stream, timeout_seconds=2.5, clock=FakeClock())
 
         self.assertEqual(names, ("BTN_SIDE", "BTN_EXTRA"))
         self.assertEqual(stream.timeouts, [2.5] * 6)
+
+    def test_uses_one_deadline_across_repeated_events(self):
+        clock = FakeClock()
+        stream = TimedEvdevStream(clock, [2.0, 2.0, 2.0])
+
+        names = capture_evdev_presses(
+            stream,
+            timeout_seconds=5.0,
+            clock=clock,
+        )
+
+        self.assertEqual(names, ("BTN_SIDE",))
+        self.assertEqual(stream.timeouts, [5.0, 3.0, 1.0])
+        self.assertEqual(clock.now, 5.0)
 
 
 class EvdevTriggerDraftTests(unittest.TestCase):

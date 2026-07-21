@@ -75,6 +75,13 @@ class ContinuousIntegrationTests(unittest.TestCase):
         self.assertIn("workflow_call:", ci_content)
         self.assertNotIn("workflow_dispatch:", content)
 
+    def test_reusable_ci_cannot_share_the_release_concurrency_group(self):
+        ci_content = WORKFLOW.read_text(encoding="utf-8")
+        release_content = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("group: CI-${{ github.ref }}", ci_content)
+        self.assertIn("group: Release-${{ github.ref }}", release_content)
+
     def test_release_workflow_limits_write_permission_to_publish_job(self):
         content = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("permissions:\n  contents: read", content)

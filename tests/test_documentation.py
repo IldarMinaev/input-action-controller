@@ -299,6 +299,12 @@ class DeviceDiscoveryContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, content)
 
+    def test_manual_evdev_rule_maps_the_configured_input_classifier(self):
+        content = read(DEVICE_GUIDE)
+
+        self.assertIn("| `input_classifier` | `ENV{ID_INPUT_*}` |", content)
+        self.assertIn('ENV{ID_INPUT_MOUSE}=="1"', content)
+
     def test_documents_the_verified_xiaomi_thumb_button_profile(self):
         content = read(DEVICE_GUIDE)
         required = (
@@ -457,6 +463,21 @@ class ApplicationGuideContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, content)
         self.assertNotIn("The verified native build used this direct pair", content)
+
+    def test_speech_note_guide_configures_persistent_uinput_access(self):
+        content = read(DSNOTE_GUIDE)
+        required = (
+            'SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess"',
+            "/etc/udev/rules.d/70-uinput-uaccess.rules",
+            "/etc/modules-load.d/uinput.conf",
+            "udevadm control --reload-rules",
+            "--subsystem-match=misc --sysname-match=uinput",
+            "test -r /dev/uinput && test -w /dev/uinput",
+            "systemctl --user enable --now ydotool.service",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, content)
 
 
 class DocumentationStructureTests(unittest.TestCase):

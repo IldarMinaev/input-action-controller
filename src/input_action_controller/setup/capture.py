@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 from typing import Callable, Protocol
 
 from evdev import ecodes
@@ -91,14 +92,19 @@ def capture_evdev_presses(
     stream: EvdevStream,
     *,
     timeout_seconds: float,
+    clock: Clock = time,
 ) -> tuple[str, ...]:
-    """Read deduplicated symbolic presses until the stream times out."""
+    """Read deduplicated symbolic presses until one hard deadline."""
     if timeout_seconds <= 0:
         raise ValueError("capture timeout must be positive")
 
     names: list[str] = []
     seen: set[str] = set()
-    while (event := stream.read(timeout_seconds)) is not None:
+    deadline = clock.monotonic() + timeout_seconds
+    while (remaining := deadline - clock.monotonic()) > 0:
+        event = stream.read(remaining)
+        if event is None:
+            break
         name = evdev_press_name(event.type, event.code, event.value)
         if name is not None and name not in seen:
             names.append(name)
