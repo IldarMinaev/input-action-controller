@@ -1,13 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended",
-    "helpers:pinGitHubActionDigests"
-  ],
+  "extends": ["config:best-practices"],
   "dependencyDashboard": true,
   "automerge": false,
   "schedule": ["before 6am on monday"],
-  "timezone": "Europe/Saratov",
   "packageRules": [
     {
       "description": "Group GitHub Actions updates",
