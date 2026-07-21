@@ -98,6 +98,15 @@ class ContinuousIntegrationTests(unittest.TestCase):
         self.assertIn("--verify-tag", content)
         self.assertIn("--generate-notes", content)
 
+    def test_release_publish_checks_out_the_verified_tag(self):
+        content = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        publish_job = content.split("  publish:\n", maxsplit=1)[1]
+        checkout = "uses: actions/checkout@"
+        release_create = "gh release create"
+
+        self.assertIn(checkout, publish_job)
+        self.assertLess(publish_job.index(checkout), publish_job.index(release_create))
+
     def test_release_workflow_pins_official_actions(self):
         content = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         uses = re.findall(r"uses: (actions/[^@]+)@([^ #]+)", content)
