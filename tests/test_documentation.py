@@ -112,7 +112,8 @@ class MaintainerGuideContractTests(unittest.TestCase):
             "signed annotated tag",
             "GitHub release",
             "input-action-controller-aur",
-            "git push aur master",
+            "scripts/update-aur-package X.Y.Z",
+            "git push origin master",
         )
         for value in required:
             with self.subTest(value=value):
