@@ -64,7 +64,10 @@ def is_project_worktree() -> bool:
 class PackageMetadataTests(unittest.TestCase):
     def test_pins_ci_tools_and_configures_ruff_for_python_311(self):
         requirements = read(ROOT / "requirements-ci.txt").splitlines()
-        self.assertEqual(requirements, ["build==1.5.0", "ruff==0.15.22"])
+        self.assertEqual(
+            requirements,
+            ["build==1.5.0", "commitizen==4.16.5", "ruff==0.15.22"],
+        )
 
         pyproject = read(ROOT / "pyproject.toml")
         self.assertIn('[tool.ruff]\ntarget-version = "py311"', pyproject)
