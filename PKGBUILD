@@ -35,6 +35,8 @@ package() {
     "$pkgdir/usr/share/doc/input-action-controller/docs/configuration.md"
   install -Dm644 docs/device-discovery.md \
     "$pkgdir/usr/share/doc/input-action-controller/docs/device-discovery.md"
+  install -Dm644 docs/maintaining.md \
+    "$pkgdir/usr/share/doc/input-action-controller/docs/maintaining.md"
   install -Dm644 docs/examples/handy-gnome-wayland.md \
     "$pkgdir/usr/share/doc/input-action-controller/docs/examples/handy-gnome-wayland.md"
   install -Dm644 docs/examples/dsnote-gnome-wayland.md \

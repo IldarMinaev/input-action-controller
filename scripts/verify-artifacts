@@ -22,6 +22,7 @@ PACKAGE_MEMBERS = {
     "usr/share/doc/input-action-controller/README.md",
     "usr/share/doc/input-action-controller/docs/configuration.md",
     "usr/share/doc/input-action-controller/docs/device-discovery.md",
+    "usr/share/doc/input-action-controller/docs/maintaining.md",
     "usr/share/doc/input-action-controller/docs/examples/handy-gnome-wayland.md",
     "usr/share/doc/input-action-controller/docs/examples/dsnote-gnome-wayland.md",
     "usr/share/licenses/input-action-controller/LICENSE",

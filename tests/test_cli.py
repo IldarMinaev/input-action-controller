@@ -31,6 +31,7 @@ from input_action_controller.models import (
     RunnerConfig,
 )
 from input_action_controller.devices.discovery import DeviceCandidate
+from tests.helpers.setup import FakeDiscovery
 
 
 def diagnostic_config(
@@ -96,16 +97,6 @@ def candidate(
         event_codes=event_codes,
         keyboard_class=keyboard_class,
     )
-
-
-class FakeDiscovery:
-    def __init__(self, candidates=()):
-        self.candidates = tuple(candidates)
-        self.calls = 0
-
-    def enumerate(self):
-        self.calls += 1
-        return self.candidates
 
 
 class FakeLock:

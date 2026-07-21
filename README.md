@@ -18,14 +18,25 @@ environment. Configure the target application separately, then use this project 
 
 ## Install on Arch Linux
 
-Build and install the package from this checkout:
+Install the [AUR package](https://aur.archlinux.org/packages/input-action-controller) with an AUR helper:
+
+```bash
+yay -S input-action-controller
+```
+
+Review the AUR `PKGBUILD` before installing it. The package installs the CLI, user service, commented configuration
+template, documentation, and license. It does not install an active configuration, a broad udev rule, or
+application-specific settings.
+
+### Build from source
+
+Clone this repository, review `PKGBUILD`, and build the same Arch package locally:
 
 ```bash
 ./scripts/makepkg -si
 ```
 
-The package installs the CLI, user service, commented configuration template, documentation, and license. It does not
-install an active configuration, a broad udev rule, or application-specific settings.
+This command requires the Arch `base-devel` package group and the dependencies declared in `PKGBUILD`.
 
 ## Quick start
 
@@ -57,6 +68,7 @@ Read the [configuration reference](docs/configuration.md) for manual TOML config
 [device-discovery guide](docs/device-discovery.md) for device access, capture, recovery, and advanced fallback steps.
 The [Handy GNOME Wayland guide](docs/examples/handy-gnome-wayland.md) and
 [Speech Note GNOME Wayland guide](docs/examples/dsnote-gnome-wayland.md) show application-specific examples.
+Project release and dependency-update procedures are in the [maintainer guide](docs/maintaining.md).
 
 ## Actions
 
@@ -99,15 +111,18 @@ journalctl --user -u input-action-controller.service -f
 
 ## Upgrade
 
-Rebuild the package, validate the configuration, and restart the service:
+Upgrade the AUR package, validate the configuration, and restart the service:
 
 ```bash
-./scripts/makepkg -si
+yay -Syu input-action-controller
 systemctl --user daemon-reload
 input-action-controller config-check
 systemctl --user restart input-action-controller.service
 input-action-controller status
 ```
+
+When using a source checkout instead, pull the desired release and run `./scripts/makepkg -si` before the remaining
+commands.
 
 ## Remove
 

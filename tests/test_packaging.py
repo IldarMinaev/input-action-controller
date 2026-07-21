@@ -167,6 +167,7 @@ class PackageMetadataTests(unittest.TestCase):
             "usr/share/doc/input-action-controller/README.md",
             "usr/share/doc/input-action-controller/docs/configuration.md",
             "usr/share/doc/input-action-controller/docs/device-discovery.md",
+            "usr/share/doc/input-action-controller/docs/maintaining.md",
             "usr/share/doc/input-action-controller/docs/examples/handy-gnome-wayland.md",
             "usr/share/doc/input-action-controller/docs/examples/dsnote-gnome-wayland.md",
             "usr/share/licenses/$pkgname/LICENSE",
@@ -290,12 +291,12 @@ class MakepkgScriptTests(unittest.TestCase):
 
         source_root = "input-action-controller-0.1.1/"
         required_members = (
-            ".github/dependabot.yml",
             ".github/workflows/ci.yml",
             ".gitignore",
             "PKGBUILD",
             "pyproject.toml",
             "requirements-ci.txt",
+            "renovate.json",
             "config.example.toml",
             "scripts/makepkg",
             "scripts/public-release",
@@ -304,6 +305,7 @@ class MakepkgScriptTests(unittest.TestCase):
             "src/input_action_controller/cli.py",
             "docs/configuration.md",
             "docs/device-discovery.md",
+            "docs/maintaining.md",
             "docs/examples/handy-gnome-wayland.md",
             "tests/test_packaging.py",
             "tests/helpers/command_tree.py",
@@ -479,6 +481,7 @@ class ArtifactVerifierTests(unittest.TestCase):
             "usr/share/doc/input-action-controller/README.md",
             "usr/share/doc/input-action-controller/docs/configuration.md",
             "usr/share/doc/input-action-controller/docs/device-discovery.md",
+            "usr/share/doc/input-action-controller/docs/maintaining.md",
             "usr/share/doc/input-action-controller/docs/examples/handy-gnome-wayland.md",
             "usr/share/doc/input-action-controller/docs/examples/dsnote-gnome-wayland.md",
             "usr/share/licenses/input-action-controller/LICENSE",

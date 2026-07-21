@@ -14,8 +14,7 @@ import tempfile
 from typing import NamedTuple
 
 
-REQUIRED_FILES = {
-    ".github/dependabot.yml",
+PUBLIC_REPOSITORY_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     ".gitignore",
@@ -25,11 +24,13 @@ REQUIRED_FILES = {
     "config.example.toml",
     "docs/configuration.md",
     "docs/device-discovery.md",
+    "docs/maintaining.md",
     "docs/examples/dsnote-gnome-wayland.md",
     "docs/examples/handy-gnome-wayland.md",
     "packaging/input-action-controller.service",
     "pyproject.toml",
     "requirements-ci.txt",
+    "renovate.json",
     "scripts/makepkg",
     "scripts/public-release",
     "scripts/verify-artifacts",
@@ -38,8 +39,8 @@ ALLOWED_PREFIXES = ("src/input_action_controller/", "tests/")
 SCAN_ROOTS = tuple(
     sorted(
         (
-            REQUIRED_FILES
-            - {path for path in REQUIRED_FILES if path.startswith(".github/")}
+            PUBLIC_REPOSITORY_FILES
+            - {path for path in PUBLIC_REPOSITORY_FILES if path.startswith(".github/")}
         )
         | {".github", "src", "tests"}
     )
@@ -138,7 +139,7 @@ def _classify_public_file(path: str) -> None:
     except UnicodeEncodeError as error:
         raise PublicTreeError("public tree contains a non-UTF-8 path") from error
 
-    if path in REQUIRED_FILES:
+    if path in PUBLIC_REPOSITORY_FILES:
         return
     parts = path.split("/")
     if (
@@ -160,7 +161,7 @@ def _classify_public_file(path: str) -> None:
 
 
 def _is_public_directory(path: str) -> bool:
-    if any(required.startswith(f"{path}/") for required in REQUIRED_FILES):
+    if any(required.startswith(f"{path}/") for required in PUBLIC_REPOSITORY_FILES):
         return True
     if any(part.startswith(".") for part in path.split("/")):
         return False
@@ -210,7 +211,7 @@ def _files(root: Path) -> set[str]:
 
 def verify_public_tree(root: Path) -> None:
     files = _files(root)
-    missing = sorted(REQUIRED_FILES - files)
+    missing = sorted(PUBLIC_REPOSITORY_FILES - files)
     if missing:
         raise PublicTreeError(f"public tree is missing: {', '.join(missing)}")
     if not any(path.startswith("src/input_action_controller/") for path in files):
@@ -390,7 +391,7 @@ def _verify_ref_tree(source: Path, ref: str) -> tuple[GitBlob, ...]:
         raise PublicTreeError(
             "public ref contains unsupported entries: " + ", ".join(sorted(unsupported))
         )
-    missing = sorted(REQUIRED_FILES - paths)
+    missing = sorted(PUBLIC_REPOSITORY_FILES - paths)
     if missing:
         raise PublicTreeError(f"public ref is missing: {', '.join(missing)}")
     if not any(path.startswith("src/input_action_controller/") for path in paths):

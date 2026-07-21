@@ -22,6 +22,7 @@ from input_action_controller.setup.capture import (
     evdev_press_name,
 )
 from input_action_controller.setup.devices import SelectorDraft
+from tests.helpers.setup import FakeClock
 
 
 @dataclass
@@ -50,17 +51,6 @@ class TimedEvdevStream:
             return None
         self.clock.advance(delay)
         return RawEvdevEvent(ecodes.EV_KEY, ecodes.BTN_SIDE, 1)
-
-
-@dataclass
-class FakeClock:
-    now: float = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
 
 
 @dataclass
