@@ -67,6 +67,7 @@ class HidrawProfile(DeviceSelector):
 @dataclass(frozen=True, kw_only=True)
 class EvdevProfile(DeviceSelector):
     mode: str
+    input_classifier: str | None = None
     on_events: tuple[str, ...] = ()
     off_events: tuple[str, ...] = ()
     toggle_events: tuple[str, ...] = ()

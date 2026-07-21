@@ -51,6 +51,7 @@ def candidate(
     id_path: str | None = None,
     event_codes: frozenset[int] | None = frozenset(),
     keyboard_class: bool = False,
+    classifier: tuple[str, str] | None = None,
 ) -> DeviceCandidate:
     properties = {
         "ID_VENDOR_ID": vendor_id,
@@ -63,6 +64,8 @@ def candidate(
         properties["ID_SERIAL_SHORT"] = serial
     if id_path is not None:
         properties["ID_PATH"] = id_path
+    if classifier is not None:
+        properties[classifier[0]] = classifier[1]
     return DeviceCandidate(
         node,
         subsystem,
@@ -73,6 +76,34 @@ def candidate(
 
 
 class ResolutionTests(unittest.TestCase):
+    def test_evdev_classifier_excludes_same_identity_unreadable_siblings(self):
+        mouse = candidate(
+            "/dev/input/event4",
+            "input",
+            vendor_id="1234",
+            product_id="5678",
+            interface_number="01",
+            event_codes=frozenset({ecodes.KEY_F13, ecodes.KEY_F14}),
+            classifier=("ID_INPUT_MOUSE", "1"),
+        )
+        key = candidate(
+            "/dev/input/event5",
+            "input",
+            vendor_id="1234",
+            product_id="5678",
+            interface_number="01",
+            event_codes=None,
+            classifier=("ID_INPUT_KEY", "1"),
+        )
+
+        resolution = resolve_profiles(
+            (evdev_profile(input_classifier="ID_INPUT_MOUSE"),),
+            (mouse, key, replace(key, node="/dev/input/event6")),
+        )[0]
+
+        self.assertEqual(resolution.status, "available")
+        self.assertEqual(resolution.node, "/dev/input/event4")
+
     def test_matches_every_stable_selector_exactly(self):
         profile = hidraw_profile(
             serial="serial-B",

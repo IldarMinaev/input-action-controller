@@ -49,6 +49,35 @@ in after group changes. For a clipboard wrapper, run `command -v wl-copy` and
 `command -v ydotool` and the configured daemon/socket check.
 Handy does not document it.
 
+If the selected insertion path uses `ydotool`, configure its separate uinput
+access. Review and run the privileged commands yourself:
+
+```bash
+printf '%s\n' \
+  'ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess"' \
+  > /tmp/70-uinput-uaccess.rules
+sudo install -m 0644 /tmp/70-uinput-uaccess.rules \
+  /etc/udev/rules.d/70-uinput-uaccess.rules
+printf '%s\n' uinput | sudo tee /etc/modules-load.d/uinput.conf >/dev/null
+sudo udevadm control --reload-rules
+if [[ -e /sys/class/misc/uinput ]]; then
+  sudo udevadm trigger --action=change \
+    --subsystem-match=misc --sysname-match=uinput
+else
+  sudo modprobe uinput
+fi
+sudo udevadm settle
+getfacl -cp /dev/uinput
+test -r /dev/uinput && test -w /dev/uinput
+systemctl --user enable --now ydotool.service
+ydotool type 'YDOTOOL_UACCESS_TEST'
+```
+
+Reloading rules must happen before the first module load. If the module is
+already loaded, the targeted change event applies the new rule to the existing
+device. `ydotoold` needs effective `rw` access to `/dev/uinput`; this is
+independent of the controller's access to its configured input source.
+
 The controller neither installs nor starts any recognition, insertion, or
 clipboard software. Discover optional Arch
 package names before installing them:

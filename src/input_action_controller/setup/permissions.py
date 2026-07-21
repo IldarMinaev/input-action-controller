@@ -168,6 +168,32 @@ def render_rule(
     return RenderedRule(destination=destination, content=content, scope=scope)
 
 
+def managed_rules_for_profile(
+    profile_name: str,
+    directory: Path = MANAGED_RULES_DIRECTORY,
+) -> tuple[Path, ...]:
+    """Find regular managed rules belonging to the exact profile-name slug."""
+    slug = _profile_slug(profile_name)
+    pattern = re.compile(
+        rf"70-input-action-controller-{re.escape(slug)}-[0-9a-f]{{12}}\.rules"
+    )
+    try:
+        entries = tuple(directory.iterdir())
+    except FileNotFoundError:
+        return ()
+    matches = []
+    for path in entries:
+        if pattern.fullmatch(path.name) is None:
+            continue
+        try:
+            mode = path.lstat().st_mode
+        except OSError:
+            continue
+        if stat.S_ISREG(mode) and not path.is_symlink():
+            matches.append(path.absolute())
+    return tuple(sorted(matches))
+
+
 def verify_reconnected_access(
     selectors: SelectorDraft,
     *,
@@ -176,7 +202,7 @@ def verify_reconnected_access(
     access_checker: AccessChecker,
     acl_checker: AclChecker,
     production_resolution_checker: ProductionResolutionChecker,
-    access: str = UACCESS,
+    access: str | None = UACCESS,
     group_mode_checker: GroupModeChecker | None = None,
 ) -> DeviceCandidate:
     """Require a new event instance, mode-specific access, and production resolution."""
@@ -209,7 +235,7 @@ def verify_reconnected_candidate(
     access_checker: AccessChecker,
     acl_checker: AclChecker,
     production_resolution_checker: ProductionResolutionChecker,
-    access: str = UACCESS,
+    access: str | None = UACCESS,
     group_mode_checker: GroupModeChecker | None = None,
 ) -> DeviceCandidate:
     """Require selector, access, and provisional-resolution checks for one new node."""
@@ -221,9 +247,18 @@ def verify_reconnected_candidate(
         )
     if not access_checker(candidate):
         raise ReconnectVerificationError(
-            f"New node {candidate.node} does not grant read access."
+            f"New node {candidate.node} does not grant effective read/write access."
         )
     if access == UACCESS:
+        current_tags = {
+            tag
+            for tag in candidate.properties.get("CURRENT_TAGS", "").split(":")
+            if tag
+        }
+        if "uaccess" not in current_tags:
+            raise ReconnectVerificationError(
+                f"New node {candidate.node} has no current uaccess tag."
+            )
         if not acl_checker(candidate):
             raise ReconnectVerificationError(
                 f"New node {candidate.node} does not have the expected ACL."
@@ -233,7 +268,7 @@ def verify_reconnected_candidate(
             raise ReconnectVerificationError(
                 f"New node {candidate.node} does not have the expected input-group mode."
             )
-    else:
+    elif access is not None:
         raise ValueError(f"unsupported udev access mode {access!r}")
     if not production_resolution_checker(candidate):
         raise ReconnectVerificationError(
@@ -252,9 +287,20 @@ class PermissionTransaction:
         *,
         staging_directory: Path | None = None,
         existing_rule_reader: ExistingRuleReader | None = None,
+        obsolete_destinations: Sequence[Path] = (),
     ):
         _validate_managed_destination(rendered.destination)
+        obsolete = tuple(
+            sorted(
+                {path for path in obsolete_destinations if path != rendered.destination}
+            )
+        )
+        for path in obsolete:
+            _validate_managed_destination(path)
         self.rendered = rendered
+        self.obsolete_destinations = obsolete
+        self.rollback_verification: tuple[SelectorDraft, str] | None = None
+        self.rollback_reconnect_required = False
         self._runner = runner
         self._staging_directory = staging_directory
         self._existing_rule_reader = existing_rule_reader or _read_existing_rule
@@ -267,6 +313,8 @@ class PermissionTransaction:
         self._finalized = False
         self._staging_path: Path | None = None
         self._rollback_staging_path: Path | None = None
+        self._original_rules: dict[Path, tuple[bytes, int] | None] = {}
+        self._rollback_staging_paths: dict[Path, Path] = {}
 
     @property
     def staging_path(self) -> Path | None:
@@ -280,7 +328,11 @@ class PermissionTransaction:
     def preview_commands(self) -> tuple[tuple[str, ...], ...]:
         if self._finalized or self._staging_path is None:
             return ()
-        return (self._install_command(), _RELOAD_RULES)
+        return (
+            self._install_command(),
+            *(self._remove_command(path) for path in self.obsolete_destinations),
+            _RELOAD_RULES,
+        )
 
     @property
     def preview_command_lines(self) -> tuple[str, ...]:
@@ -293,7 +345,7 @@ class PermissionTransaction:
         if self._destination_changed:
             if self._rollback_applied:
                 return (_RELOAD_RULES,)
-            return (self._rollback_command(), _RELOAD_RULES)
+            return (*self._rollback_commands(), _RELOAD_RULES)
         return self.preview_commands
 
     @property
@@ -309,6 +361,27 @@ class PermissionTransaction:
         """Whether the privileged destination write command returned successfully."""
         return self._destination_write_succeeded
 
+    @property
+    def destination_changed(self) -> bool:
+        """Whether rollback may still be required for the managed destination."""
+        return self._destination_changed
+
+    @property
+    def previous_access(self) -> str | None:
+        """Return the unambiguous access policy restored by rollback."""
+        if not self._prepared:
+            raise RuntimeError("Permission transaction has not been prepared.")
+        policies = set()
+        for existing in self._original_rules.values():
+            if existing is None:
+                continue
+            content = existing[0]
+            if b'TAG+="uaccess"' in content:
+                policies.add(UACCESS)
+            if b'GROUP="input"' in content and b'MODE="0660"' in content:
+                policies.add(INPUT_GROUP_ACCESS)
+        return next(iter(policies)) if len(policies) == 1 else None
+
     def install(self) -> None:
         if self._finalized:
             raise RuntimeError("Cannot install a finalized permission transaction.")
@@ -319,6 +392,8 @@ class PermissionTransaction:
         self._destination_changed = True
         self._run(install_command)
         self._destination_write_succeeded = True
+        for path in self.obsolete_destinations:
+            self._run(self._remove_command(path))
         self._run(_RELOAD_RULES)
         self._installed = True
 
@@ -328,7 +403,8 @@ class PermissionTransaction:
         if not self._destination_changed:
             return
         if not self._rollback_applied:
-            self._run(self._rollback_command())
+            for command in self._rollback_commands():
+                self._run(command)
             self._rollback_applied = True
         self._run(_RELOAD_RULES)
         self._destination_changed = False
@@ -349,20 +425,23 @@ class PermissionTransaction:
     def prepare(self) -> None:
         if self._prepared:
             return
-        try:
-            existing = self._existing_rule_reader(self.rendered.destination)
-        except OSError as error:
-            raise UnreadableManagedRule(
-                f"Cannot read existing managed rule {self.rendered.destination}: "
-                f"{error}. Fix its read access before replacing it."
-            ) from error
-        if existing is not None:
-            content, mode = existing
-            if not isinstance(content, bytes) or not isinstance(mode, int):
-                raise TypeError(
-                    "existing_rule_reader must return (bytes, mode) or None"
-                )
-            self._existing_rule = (content, stat.S_IMODE(mode))
+        for path in (*self.obsolete_destinations, self.rendered.destination):
+            try:
+                existing = self._existing_rule_reader(path)
+            except OSError as error:
+                raise UnreadableManagedRule(
+                    f"Cannot read existing managed rule {path}: {error}. "
+                    "Fix its read access before replacing it."
+                ) from error
+            if existing is not None:
+                content, mode = existing
+                if not isinstance(content, bytes) or not isinstance(mode, int):
+                    raise TypeError(
+                        "existing_rule_reader must return (bytes, mode) or None"
+                    )
+                existing = (content, stat.S_IMODE(mode))
+            self._original_rules[path] = existing
+        self._existing_rule = self._original_rules[self.rendered.destination]
 
         try:
             self._staging_path = _write_staging_file(
@@ -370,12 +449,18 @@ class PermissionTransaction:
                 directory=self._staging_directory,
                 prefix=f"{self.rendered.destination.stem}.",
             )
-            if self._existing_rule is not None:
-                self._rollback_staging_path = _write_staging_file(
-                    self._existing_rule[0],
+            for path, existing in self._original_rules.items():
+                if existing is None:
+                    continue
+                rollback_path = _write_staging_file(
+                    existing[0],
                     directory=self._staging_directory,
-                    prefix=f"{self.rendered.destination.stem}.rollback.",
+                    prefix=f"{path.stem}.rollback.",
                 )
+                self._rollback_staging_paths[path] = rollback_path
+            self._rollback_staging_path = self._rollback_staging_paths.get(
+                self.rendered.destination
+            )
         except BaseException:
             self._remove_staging()
             raise
@@ -394,27 +479,35 @@ class PermissionTransaction:
             str(self.rendered.destination),
         )
 
-    def _rollback_command(self) -> tuple[str, ...]:
-        if self._existing_rule is None:
-            return (
-                _SUDO,
-                "--",
-                _RM,
-                "-f",
-                "--",
-                str(self.rendered.destination),
+    @staticmethod
+    def _remove_command(path: Path) -> tuple[str, ...]:
+        return (_SUDO, "--", _RM, "-f", "--", str(path))
+
+    def _rollback_commands(self) -> tuple[tuple[str, ...], ...]:
+        commands = []
+        for path in (*self.obsolete_destinations, self.rendered.destination):
+            existing = self._original_rules[path]
+            if existing is None:
+                commands.append(self._remove_command(path))
+                continue
+            staging = self._rollback_staging_paths.get(path)
+            if staging is None:
+                raise RuntimeError("Rollback staging has not been prepared.")
+            commands.append(
+                (
+                    _SUDO,
+                    "--",
+                    _INSTALL,
+                    "-m",
+                    f"{existing[1]:04o}",
+                    str(staging),
+                    str(path),
+                )
             )
-        if self._rollback_staging_path is None:
-            raise RuntimeError("Rollback staging has not been prepared.")
-        return (
-            _SUDO,
-            "--",
-            _INSTALL,
-            "-m",
-            f"{self._existing_rule[1]:04o}",
-            str(self._rollback_staging_path),
-            str(self.rendered.destination),
-        )
+        return tuple(commands)
+
+    def _rollback_command(self) -> tuple[str, ...]:
+        return self._rollback_commands()[0]
 
     def _run(self, argv: tuple[str, ...]) -> None:
         result = self._runner(argv, check=True, shell=False)
@@ -423,12 +516,17 @@ class PermissionTransaction:
             raise subprocess.CalledProcessError(returncode, argv)
 
     def _remove_staging(self) -> None:
-        paths = (self._staging_path, self._rollback_staging_path)
+        paths = (
+            self._staging_path,
+            self._rollback_staging_path,
+            *self._rollback_staging_paths.values(),
+        )
         for path in paths:
             if path is not None:
                 path.unlink(missing_ok=True)
         self._staging_path = None
         self._rollback_staging_path = None
+        self._rollback_staging_paths.clear()
 
 
 def _normalize_selectors(selectors: SelectorDraft) -> SelectorDraft:
@@ -476,7 +574,7 @@ def _match_clauses(selectors: SelectorDraft) -> tuple[str, ...]:
         ("input", "event*") if selectors.transport == "evdev" else ("hidraw", "hidraw*")
     )
     clauses = [
-        'ACTION=="add"',
+        'ACTION!="remove"',
         f'SUBSYSTEM=="{subsystem}"',
         f'KERNEL=="{kernel}"',
         f'ATTRS{{idVendor}}=="{selectors.vendor_id}"',

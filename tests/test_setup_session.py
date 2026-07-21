@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+import os
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -26,6 +27,7 @@ from input_action_controller.setup.config_editor import (
     ConfigCommitError,
     ConfigEditor,
 )
+from input_action_controller.setup.devices import SelectorDraft
 from input_action_controller.setup.permissions import (
     DeviceInstanceObservation,
     INPUT_GROUP_ACCESS,
@@ -84,6 +86,7 @@ def candidate(
         "ID_MODEL_ID": "5678",
         "ID_USB_INTERFACE_NUM": "01",
         "ID_MODEL": "Desk control",
+        "CURRENT_TAGS": ":seat:uaccess:",
     }
     classifiers = ()
     if transport == "evdev":
@@ -289,13 +292,18 @@ class FakePermissionTransaction:
         reload_error: Exception | None = None,
         rollback_error: Exception | None = None,
         finalize_error: Exception | None = None,
+        previous_access: str | None = None,
     ):
         self.rendered = rendered
+        self.obsolete_destinations: tuple[Path, ...] = ()
+        self.rollback_verification = None
+        self.rollback_reconnect_required = False
         self.events = events
         self.install_error = install_error
         self.reload_error = reload_error
         self.rollback_error = rollback_error
         self.finalize_error = finalize_error
+        self.previous_access = previous_access
         self.prepared = False
         self.install_started = False
         self.destination_write_succeeded = False
@@ -319,6 +327,10 @@ class FakePermissionTransaction:
             if self.install_started and not self.rolled_back
             else None
         )
+
+    @property
+    def destination_changed(self):
+        return self.install_started and not self.rolled_back
 
     def prepare(self):
         self.prepared = True
@@ -363,6 +375,8 @@ class FakePermissionFactory:
         verify_error: Exception | None = None,
         rollback_error: Exception | None = None,
         finalize_error: Exception | None = None,
+        obsolete_destinations: tuple[Path, ...] = (),
+        previous_access: str | None = None,
     ):
         self.reconnected = reconnected
         self.events = events
@@ -371,6 +385,8 @@ class FakePermissionFactory:
         self.verify_error = verify_error
         self.rollback_error = rollback_error
         self.finalize_error = finalize_error
+        self.obsolete_destinations = obsolete_destinations
+        self.previous_access = previous_access
         self.transaction: FakePermissionTransaction | None = None
         self.create_calls = []
         self.snapshot_calls = []
@@ -382,10 +398,26 @@ class FakePermissionFactory:
         self.acl_calls = 0
         self.resolution_calls = 0
 
-    def create(self, profile_name, selectors, candidates, *, access=UACCESS):
+    def create(
+        self,
+        profile_name,
+        selectors,
+        candidates,
+        *,
+        access=UACCESS,
+        replace_profile_name=None,
+    ):
         if self.events is not None:
             self.events.append("permission.create")
-        self.create_calls.append((profile_name, selectors, tuple(candidates), access))
+        self.create_calls.append(
+            (
+                profile_name,
+                selectors,
+                tuple(candidates),
+                access,
+                replace_profile_name,
+            )
+        )
         self.access = access
         rendered = render_rule(profile_name, selectors, candidates, access=access)
         self.transaction = FakePermissionTransaction(
@@ -395,7 +427,9 @@ class FakePermissionFactory:
             reload_error=self.reload_error,
             rollback_error=self.rollback_error,
             finalize_error=self.finalize_error,
+            previous_access=self.previous_access,
         )
+        self.transaction.obsolete_destinations = self.obsolete_destinations
         return self.transaction
 
     def begin_reconnect_monitor(self, selectors):
@@ -673,7 +707,7 @@ class FakePrompts:
         self._visit("confirm_keyboard_capture")
         return True
 
-    def choose_evdev_trigger(self, events):
+    def choose_evdev_trigger(self, events, *, default_toggle_timeout_seconds=60.0):
         self._visit("choose_evdev_trigger")
         self.captured_events = tuple(events)
         assert self.evdev_trigger is not None
@@ -861,6 +895,164 @@ class SetupSessionTests(unittest.TestCase):
         self.assertEqual(permission_factory.create_calls, [])
         self.assertEqual(prompts.reconnect_instructions, [])
 
+    def test_updates_existing_evdev_profile_and_persists_classifier(self):
+        self.destination.parent.mkdir(parents=True)
+        self.destination.write_text(
+            "[actions.voice]\n"
+            'on_command = ["/usr/bin/true"]\n'
+            'off_command = ["/usr/bin/true"]\n\n'
+            "[[devices]]\n"
+            'name = "Mouse button"\n'
+            'action = "voice"\n'
+            'transport = "evdev"\n'
+            'mode = "toggle"\n'
+            'vendor_id = "1234"\n'
+            'product_id = "5678"\n'
+            'interface_number = "01"\n'
+            'toggle_events = ["BTN_EXTRA"]\n'
+            "toggle_off_timeout_seconds = 0\n",
+            encoding="utf-8",
+        )
+        selected = candidate("/dev/input/event4")
+        sibling = candidate(
+            "/dev/input/event5",
+            event_names=("KEY_A",),
+            keyboard_class=True,
+            input_classifiers=(("ID_INPUT_KEYBOARD", "1"),),
+        )
+
+        class UpdatePrompts(FakePrompts):
+            def choose_profile_operation(self, names):
+                self._visit("choose_profile_operation")
+                self.offered_profiles = names
+                return "Mouse button"
+
+            def choose_evdev_trigger(
+                self, events, *, default_toggle_timeout_seconds=60.0
+            ):
+                self._visit("choose_evdev_trigger")
+                self.captured_events = tuple(events)
+                self.received_toggle_timeout = default_toggle_timeout_seconds
+                return EvdevTriggerDraft(
+                    mode="toggle",
+                    toggle_events=("BTN_SIDE",),
+                    toggle_off_timeout_seconds=default_toggle_timeout_seconds,
+                )
+
+        prompts = UpdatePrompts(
+            action=new_action(),
+            selected=selected,
+            profile_name="unused",
+            evdev_trigger=EvdevTriggerDraft(mode="toggle", toggle_events=("BTN_SIDE",)),
+        )
+        permissions = FakePermissionFactory(selected)
+        result, _service, permissions = self.run_session(
+            selected=selected,
+            prompts=prompts,
+            capture_factory=FakeCaptureFactory(
+                (
+                    FakeEvdevStream(
+                        (
+                            RawEvdevEvent(
+                                ecodes.EV_KEY,
+                                ecodes.ecodes["BTN_SIDE"],
+                                1,
+                            ),
+                        )
+                    ),
+                )
+            ),
+            permission_factory=permissions,
+            candidates=(selected, sibling),
+        )
+
+        self.assertEqual(result, 0)
+        config = load_config(self.destination)
+        self.assertEqual(len(config.devices), 1)
+        self.assertEqual(config.devices[0].name, "Mouse button")
+        self.assertEqual(config.devices[0].input_classifier, "ID_INPUT_MOUSE")
+        self.assertEqual(config.devices[0].toggle_off_timeout_seconds, 0)
+        self.assertEqual(prompts.received_toggle_timeout, 0)
+        self.assertEqual(permissions.create_calls[0][4], "Mouse button")
+
+    def test_rollback_of_same_path_profile_update_verifies_after_reconnect(self):
+        self.destination.parent.mkdir(parents=True)
+        self.destination.write_text(
+            "[actions.voice]\n"
+            'on_command = ["/usr/bin/true"]\n'
+            'off_command = ["/usr/bin/true"]\n\n'
+            "[[devices]]\n"
+            'name = "Mouse button"\n'
+            'action = "voice"\n'
+            'transport = "evdev"\n'
+            'mode = "toggle"\n'
+            'vendor_id = "1234"\n'
+            'product_id = "5678"\n'
+            'interface_number = "01"\n'
+            'toggle_events = ["BTN_EXTRA"]\n',
+            encoding="utf-8",
+        )
+        selected = candidate("/dev/input/event4")
+        sibling = candidate(
+            "/dev/input/event5",
+            event_names=("KEY_A",),
+            keyboard_class=True,
+            input_classifiers=(("ID_INPUT_KEYBOARD", "1"),),
+        )
+        events: list[str] = []
+
+        class UpdatePrompts(FakePrompts):
+            def choose_profile_operation(self, _names):
+                self._visit("choose_profile_operation")
+                return "Mouse button"
+
+        prompts = UpdatePrompts(
+            action=new_action(),
+            selected=selected,
+            profile_name="unused",
+            evdev_trigger=EvdevTriggerDraft(mode="toggle", toggle_events=("BTN_SIDE",)),
+            fail_at="confirm_config",
+            events=events,
+        )
+        permissions = FakePermissionFactory(
+            selected,
+            events=events,
+            previous_access=INPUT_GROUP_ACCESS,
+        )
+
+        result, _service, _permissions = self.run_session(
+            selected=selected,
+            prompts=prompts,
+            capture_factory=FakeCaptureFactory(
+                (
+                    FakeEvdevStream(
+                        (
+                            RawEvdevEvent(
+                                ecodes.EV_KEY,
+                                ecodes.ecodes["BTN_SIDE"],
+                                1,
+                            ),
+                        )
+                    ),
+                )
+            ),
+            permission_factory=permissions,
+            candidates=(selected, sibling),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(permissions.monitor_calls), 2)
+        self.assertEqual(len(permissions.verify_calls), 2)
+        rollback_selectors, _monitor, rollback_access = permissions.verify_calls[1]
+        self.assertIsNone(rollback_selectors.classifier)
+        self.assertEqual(rollback_access, INPUT_GROUP_ACCESS)
+        rollback_index = events.index("permission.rollback")
+        self.assertEqual(events[rollback_index - 1], "permission.monitor")
+        self.assertEqual(
+            events[rollback_index + 1 : rollback_index + 3],
+            ["prompts.show_reconnect_instruction", "permission.verify"],
+        )
+
     def test_final_runtime_profile_selects_captured_node(self):
         selected = candidate("/dev/input/event4")
         siblings = (
@@ -896,48 +1088,6 @@ class SetupSessionTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(load_config(self.destination).devices[-1].name, "Desk button")
-
-    def test_ambiguous_final_profile_rolls_back_before_commit(self):
-        selected = candidate("/dev/input/event4")
-        sibling = candidate(
-            "/dev/input/event5",
-            keyboard_class=True,
-            input_classifiers=(("ID_INPUT_KEYBOARD", "1"),),
-        )
-        events: list[str] = []
-        prompts = FakePrompts(
-            action=new_action(),
-            selected=selected,
-            profile_name="Desk button",
-            evdev_trigger=EvdevTriggerDraft(mode="toggle", toggle_events=("BTN_SIDE",)),
-            confirm_managed_permission=True,
-            events=events,
-        )
-        permissions = FakePermissionFactory(selected)
-        service = FakeService()
-
-        result, _service, permissions = self.run_session(
-            selected=selected,
-            prompts=prompts,
-            capture_factory=FakeCaptureFactory(
-                (
-                    FakeEvdevStream(
-                        (RawEvdevEvent(ecodes.EV_KEY, ecodes.ecodes["BTN_SIDE"], 1),)
-                    ),
-                )
-            ),
-            permission_factory=permissions,
-            service=service,
-            candidates=(selected, sibling),
-        )
-
-        self.assertEqual(result, 1)
-        assert permissions.transaction is not None
-        self.assertTrue(permissions.transaction.rolled_back)
-        self.assertEqual(service.restore_calls, [service.original])
-        self.assertFalse(self.destination.exists())
-        self.assertIn("ambiguous-device", prompts.errors[0])
-        self.assertNotIn("prompts.confirm_config", events)
 
     def test_unavailable_or_wrong_node_final_profile_rolls_back_before_confirmation(
         self,
@@ -1592,9 +1742,9 @@ class SetupSessionTests(unittest.TestCase):
                 "config.load",
                 "service.snapshot",
                 "service.stop",
-                "prompts.choose_action",
                 "discovery.enumerate",
                 "prompts.choose_device",
+                "prompts.choose_action",
                 "prompts.choose_profile_name",
                 "prompts.choose_permission_access",
                 "permission.create",
@@ -1767,7 +1917,7 @@ class SetupSessionTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(result, 1)
-        self.assertEqual(service.restore_calls, [service.original])
+        self.assertEqual(service.restore_calls, [])
         self.assertEqual(
             prompts.recovery_failures,
             [("permission", "injected permission rollback failure")],
@@ -1906,7 +2056,7 @@ class SetupSessionTests(unittest.TestCase):
         assert editor.transaction is not None
         self.assertIn(editor.transaction, prompts.recovery_failure_transactions)
 
-    def test_approved_permission_install_failure_preserves_recovery_material_without_rollback(
+    def test_approved_permission_install_failure_rolls_back_uncertain_destination(
         self,
     ):
         selected = candidate("/dev/input/event4", readable=False)
@@ -1943,12 +2093,9 @@ class SetupSessionTests(unittest.TestCase):
         assert permissions.transaction is not None
         self.assertTrue(permissions.transaction.install_started)
         self.assertFalse(permissions.transaction.destination_write_succeeded)
-        self.assertFalse(permissions.transaction.rolled_back)
+        self.assertTrue(permissions.transaction.rolled_back)
         self.assertEqual(service.restore_calls, [service.original])
-        self.assertIn(
-            permissions.transaction.recovery_command_lines,
-            prompts.manual_permission,
-        )
+        self.assertEqual(prompts.manual_permission, [])
 
     def test_reload_failure_after_a_confirmed_permission_write_rolls_back(self):
         selected = candidate("/dev/input/event4", readable=False)
@@ -2116,6 +2263,53 @@ class SetupSessionTests(unittest.TestCase):
         assert self.editor.transaction is not None
         self.assertTrue(self.editor.transaction.restored)
         self.assertIn("Cancelled by user.", prompts.errors)
+
+    def test_postcommit_permission_rollback_failure_keeps_service_stopped(self):
+        selected = candidate("/dev/input/event4")
+        prompts = FakePrompts(
+            action=new_action(),
+            selected=selected,
+            profile_name="Desk button",
+        )
+        permissions = FakePermissionFactory(selected)
+        service = FakeService()
+        session = SetupSession(
+            None,
+            SetupDependencies(
+                config_editor=self.editor,
+                discovery=FakeDiscovery((selected,)),
+                capture_factory=FakeCaptureFactory(()),
+                permission_factory=permissions,
+                service=service,
+                prompts=prompts,
+            ),
+        )
+        transaction = FakePermissionTransaction(
+            render_rule(
+                "Desk button",
+                SelectorDraft(
+                    transport="evdev",
+                    vendor_id="1234",
+                    product_id="5678",
+                    interface_number="01",
+                    classifier=("ID_INPUT_MOUSE", "1"),
+                ),
+                (selected,),
+            ),
+            rollback_error=RuntimeError("injected rollback failure"),
+        )
+        config_transaction = Mock()
+
+        recovered = session._restore_committed_state(
+            service.original,
+            config_transaction,
+            transaction,
+            True,
+        )
+
+        self.assertFalse(recovered)
+        config_transaction.restore.assert_called_once_with()
+        self.assertEqual(service.restore_calls, [])
 
     def test_postcommit_recovery_eof_leaves_potentially_committed_state_in_place(self):
         selected = candidate("/dev/input/event4", readable=False)
@@ -2350,105 +2544,47 @@ class SetupCompositionTests(unittest.TestCase):
             classifier=("ID_INPUT_MOUSE", "1"),
         )
 
-    def test_permission_factory_rejects_a_standalone_change_event(self):
+    def test_permission_factory_requires_a_matching_remove_before_add(self):
         selected = candidate("/dev/input/event4")
-        monitor = FakeUdevMonitor(
-            FakeUdevDevice(
-                selected.node, "/sys/devices/old", action="change", sequence_number=12
-            )
-        )
-        factory = SetupPermissionFactory(
-            FakeDiscovery((selected,)),
-            context=FakeUdevContext(()),
-            monitor_factory=lambda _context: monitor,
-            access_fn=lambda _node, _mode: True,
-            acl_checker=lambda _candidate: True,
-        )
-        selectors = self.selectors()
-
-        with self.assertRaisesRegex(ReconnectVerificationError, "Timed out"):
-            factory.verify_reconnected(
-                selectors, factory.begin_reconnect_monitor(selectors)
-            )
-
-    def test_permission_factory_rejects_an_add_before_matching_remove(self):
-        selected = candidate("/dev/input/event4")
-        monitor = FakeUdevMonitor(
-            FakeUdevDevice(
-                selected.node, "/sys/devices/new", action="add", sequence_number=12
-            )
-        )
-        factory = SetupPermissionFactory(
-            FakeDiscovery((selected,)),
-            context=FakeUdevContext(()),
-            monitor_factory=lambda _context: monitor,
-            access_fn=lambda _node, _mode: True,
-            acl_checker=lambda _candidate: True,
-        )
-        selectors = self.selectors()
-
-        with self.assertRaisesRegex(ReconnectVerificationError, "Timed out"):
-            factory.verify_reconnected(
-                selectors, factory.begin_reconnect_monitor(selectors)
-            )
-
-    def test_permission_factory_accepts_a_matching_remove_then_add_on_a_new_node(self):
-        old = candidate("/dev/input/event4", readable=False)
-        new = candidate("/dev/input/event8", readable=True)
-        monitor = FakeUdevMonitor(
-            (
+        cases = {
+            "change only": (
                 FakeUdevDevice(
-                    old.node, "/sys/devices/old", action="remove", sequence_number=12
+                    selected.node, "/sys/old", action="change", sequence_number=12
                 ),
+            ),
+            "add only": (
                 FakeUdevDevice(
-                    new.node, "/sys/devices/new", action="add", sequence_number=13
+                    selected.node, "/sys/new", action="add", sequence_number=12
                 ),
-            )
-        )
-        factory = SetupPermissionFactory(
-            FakeDiscovery((old,), snapshots=((old,), (new,), (new,))),
-            context=FakeUdevContext(()),
-            monitor_factory=lambda _context: monitor,
-            access_fn=lambda _node, _mode: True,
-            acl_checker=lambda _candidate: True,
-        )
-        selectors = self.selectors()
-
-        resolved = factory.verify_reconnected(
-            selectors,
-            factory.begin_reconnect_monitor(selectors),
-        )
-
-        self.assertEqual(resolved, new)
-
-    def test_permission_factory_rejects_an_unrelated_remove_before_add(self):
-        selected = candidate("/dev/input/event4")
-        monitor = FakeUdevMonitor(
-            (
+            ),
+            "unrelated remove then add": (
                 FakeUdevDevice(
                     "/dev/input/event9",
-                    "/sys/devices/other",
+                    "/sys/other",
                     action="remove",
                     sequence_number=12,
                 ),
                 FakeUdevDevice(
-                    selected.node, "/sys/devices/new", action="add", sequence_number=13
+                    selected.node, "/sys/new", action="add", sequence_number=13
                 ),
-            )
-        )
-        factory = SetupPermissionFactory(
-            FakeDiscovery((selected,)),
-            context=FakeUdevContext(()),
-            monitor_factory=lambda _context: monitor,
-            access_fn=lambda _node, _mode: True,
-            acl_checker=lambda _candidate: True,
-        )
-        selectors = self.selectors()
-
-        with self.assertRaisesRegex(ReconnectVerificationError, "Timed out"):
-            factory.verify_reconnected(
-                selectors, factory.begin_reconnect_monitor(selectors)
-            )
+            ),
+        }
+        for name, events in cases.items():
+            with self.subTest(name=name):
+                monitor = FakeUdevMonitor(events)
+                factory = SetupPermissionFactory(
+                    FakeDiscovery((selected,)),
+                    context=FakeUdevContext(()),
+                    monitor_factory=lambda _context, monitor=monitor: monitor,
+                    access_fn=lambda _node, _mode: True,
+                    acl_checker=lambda _candidate: True,
+                )
+                selectors = self.selectors()
+                with self.assertRaisesRegex(ReconnectVerificationError, "Timed out"):
+                    factory.verify_reconnected(
+                        selectors,
+                        factory.begin_reconnect_monitor(selectors),
+                    )
 
     def test_permission_factory_uses_classifier_for_provisional_resolution(self):
         selected = candidate("/dev/input/event4")
@@ -2491,7 +2627,7 @@ class SetupCompositionTests(unittest.TestCase):
         self,
     ):
         old = candidate("/dev/input/event4", readable=False)
-        new = candidate("/dev/input/event4", readable=True)
+        new = candidate("/dev/input/event8", readable=True)
         monitor = FakeUdevMonitor(
             (
                 FakeUdevDevice(
@@ -2503,11 +2639,12 @@ class SetupCompositionTests(unittest.TestCase):
             )
         )
         discovery = FakeDiscovery((new,), snapshots=((old,), (new,), (new,)))
+        access_modes = []
         factory = SetupPermissionFactory(
             discovery,
             context=FakeUdevContext(()),
             monitor_factory=lambda _context: monitor,
-            access_fn=lambda _node, _mode: True,
+            access_fn=lambda _node, mode: access_modes.append(mode) or True,
             acl_checker=lambda _candidate: True,
         )
         selectors = self.selectors()
@@ -2516,7 +2653,45 @@ class SetupCompositionTests(unittest.TestCase):
         resolved = factory.verify_reconnected(selectors, reconnect_monitor)
 
         self.assertEqual(resolved, new)
+        self.assertNotEqual(old.node, new.node)
         self.assertEqual(monitor.subsystems, ["input"])
+        self.assertEqual(access_modes, [os.R_OK | os.W_OK])
+
+    def test_permission_factory_rejects_effective_write_removed_by_acl_mask(self):
+        selected = candidate("/dev/input/event4")
+        monitor = FakeUdevMonitor(
+            (
+                FakeUdevDevice(
+                    selected.node,
+                    "/sys/devices/old",
+                    action="remove",
+                    sequence_number=12,
+                ),
+                FakeUdevDevice(
+                    selected.node,
+                    "/sys/devices/new",
+                    action="add",
+                    sequence_number=13,
+                ),
+            )
+        )
+        modes = []
+        factory = SetupPermissionFactory(
+            FakeDiscovery((selected,)),
+            context=FakeUdevContext(()),
+            monitor_factory=lambda _context: monitor,
+            access_fn=lambda _node, mode: modes.append(mode) or False,
+            acl_checker=lambda _candidate: True,
+        )
+        selectors = self.selectors()
+
+        with self.assertRaisesRegex(ReconnectVerificationError, "effective read/write"):
+            factory.verify_reconnected(
+                selectors,
+                factory.begin_reconnect_monitor(selectors),
+            )
+
+        self.assertEqual(modes, [os.R_OK | os.W_OK])
 
     def test_permission_factory_uses_a_post_monitor_event_sequence_and_skips_unrelated_events(
         self,
@@ -2601,7 +2776,7 @@ class SetupCompositionTests(unittest.TestCase):
         self.assertEqual(resolved, selected)
         self.assertEqual(group_checks, [selected.node])
 
-    def test_acl_check_uses_numeric_uid_output_and_requires_read_permission(self):
+    def test_acl_check_uses_numeric_uid_output_and_requires_read_write_permission(self):
         calls = []
 
         def runner(argv, **kwargs):
@@ -2616,6 +2791,19 @@ class SetupCompositionTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertIn("--numeric", calls[0][0])
+
+    def test_acl_check_rejects_read_only_and_other_uid_entries(self):
+        def check(output):
+            return _has_current_user_acl(
+                candidate("/dev/input/event4"),
+                runner=lambda _argv, **_kwargs: type(
+                    "Result", (), {"returncode": 0, "stdout": output}
+                )(),
+                uid=lambda: 1000,
+            )
+
+        self.assertFalse(check("user:1000:r--\n"))
+        self.assertFalse(check("user:1001:rw-\n"))
 
     def test_input_group_checker_requires_input_gid_and_group_read_mode(self):
         node_stat = SimpleNamespace(st_gid=42, st_mode=0o660)

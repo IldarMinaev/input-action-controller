@@ -194,7 +194,8 @@ class ConfigurationGuideContractTests(unittest.TestCase):
         required = (
             "readable devices normally skip permission changes",
             "Create a managed permission rule for this readable device? [y/N/x]",
-            "removes broad rules and `input` group membership only after reconnect and action tests pass",
+            "removes obsolete selector-hashed rules for that exact profile",
+            "Remove broader external rules and `input` group membership only after reconnect and action tests pass",
             "[device-discovery guide](device-discovery.md)",
         )
         for value in required:
@@ -209,8 +210,8 @@ class DeviceDiscoveryContractTests(unittest.TestCase):
             "Composite evdev devices",
             "standard udev `ID_INPUT_*` classifier",
             "serial number or `ID_PATH`",
-            "selected classifier appears in the managed udev rule",
-            "not stored in the runtime profile",
+            "selected classifier appears in both the managed udev rule",
+            "input_classifier",
             "same capability-based resolver used by the daemon",
             "stops before saving",
             "does not identify the selected node uniquely",
@@ -297,6 +298,12 @@ class DeviceDiscoveryContractTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, content)
+
+    def test_manual_evdev_rule_maps_the_configured_input_classifier(self):
+        content = read(DEVICE_GUIDE)
+
+        self.assertIn("| `input_classifier` | `ENV{ID_INPUT_*}` |", content)
+        self.assertIn('ENV{ID_INPUT_MOUSE}=="1"', content)
 
     def test_documents_the_verified_xiaomi_thumb_button_profile(self):
         content = read(DEVICE_GUIDE)
@@ -456,6 +463,21 @@ class ApplicationGuideContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, content)
         self.assertNotIn("The verified native build used this direct pair", content)
+
+    def test_speech_note_guide_configures_persistent_uinput_access(self):
+        content = read(DSNOTE_GUIDE)
+        required = (
+            'SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess"',
+            "/etc/udev/rules.d/70-uinput-uaccess.rules",
+            "/etc/modules-load.d/uinput.conf",
+            "udevadm control --reload-rules",
+            "--subsystem-match=misc --sysname-match=uinput",
+            "test -r /dev/uinput && test -w /dev/uinput",
+            "systemctl --user enable --now ydotool.service",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, content)
 
 
 class DocumentationStructureTests(unittest.TestCase):

@@ -17,6 +17,7 @@ from typing import NamedTuple
 REQUIRED_FILES = {
     ".github/dependabot.yml",
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
     ".gitignore",
     "LICENSE",
     "PKGBUILD",

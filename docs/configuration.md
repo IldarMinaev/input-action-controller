@@ -79,6 +79,7 @@ transport = "evdev"
 mode = "toggle"
 vendor_id = "1234"
 product_id = "5678"
+input_classifier = "ID_INPUT_MOUSE"
 toggle_events = ["KEY_F13"]
 toggle_off_timeout_seconds = 0
 ```
@@ -115,6 +116,10 @@ resolution statuses include `unavailable`, `permission-denied`, `ambiguous-devic
 and `off_events`, or `mode = "toggle"` with `toggle_events`. Evdev names must be symbolic `KEY_*` or `BTN_*` values.
 Only press value `1` triggers an action; release and autorepeat are ignored.
 
+`input_classifier` is an optional evdev-only `ID_INPUT_*` property. Setup writes
+it when a composite USB device exposes several event nodes and the classifier
+is needed to keep runtime resolution aligned with the managed udev rule.
+
 `toggle_off_timeout_seconds` defaults to `60.0`. A positive value requests automatic off after that many seconds.
 `toggle_off_timeout_seconds = 0` disables automatic off.
 
@@ -122,8 +127,11 @@ Only press value `1` triggers an action; release and autorepeat are ignored.
 
 During migration, readable devices normally skip permission changes. If a temporary broad rule or `input` group
 membership makes a device readable, setup asks `Create a managed permission rule for this readable device? [y/N/x]`.
-Answer yes to install and verify a profile-specific managed rule without first removing the existing access. The
-operator removes broad rules and `input` group membership only after reconnect and action tests pass.
+Choose the existing profile in setup to recapture it. Setup installs the new
+profile-specific rule, removes obsolete selector-hashed rules for that exact
+profile, reloads udev, and verifies the final rule set after reconnect. Remove
+broader external rules and `input` group membership only after reconnect and
+action tests pass.
 
 See the [device-discovery guide](device-discovery.md) for permission scope, device capture, managed-rule inspection,
 backups, recovery artifacts, and the advanced manual fallback.

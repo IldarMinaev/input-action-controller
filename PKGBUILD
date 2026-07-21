@@ -1,6 +1,6 @@
 # Maintainer: Ildar Minaev <ildar.minaev@gmail.com>
 pkgname=input-action-controller
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Map Linux input events to configurable actions"
 url="https://github.com/IldarMinaev/input-action-controller"

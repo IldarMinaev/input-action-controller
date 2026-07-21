@@ -37,7 +37,9 @@ It does not silently run privileged work.
 
 One USB device can expose several `/dev/input/event*` nodes with the same USB identity. During setup, the controller
 uses a standard udev `ID_INPUT_*` classifier to narrow those nodes before it considers a serial number or `ID_PATH`.
-The selected classifier appears in the managed udev rule, but it is not stored in the runtime profile.
+The selected classifier appears in both the managed udev rule and the runtime
+profile as `input_classifier`. This keeps runtime identity and permission scope
+aligned after a reboot.
 
 The supported classifier registry names are:
 
@@ -254,6 +256,7 @@ selector:
 | `interface_number` | `ENV{ID_USB_INTERFACE_NUM}` |
 | `serial` | `ENV{ID_SERIAL_SHORT}` |
 | `id_path` | `ENV{ID_PATH}` |
+| `input_classifier` | `ENV{ID_INPUT_*}` |
 
 Compare each configured value with `udevadm info --query=property` and
 `udevadm info --attribute-walk`. If a
@@ -279,7 +282,7 @@ Create a staging file as your normal user:
 ```bash
 rule_file=$(mktemp)
 printf '%s%s%s\n' \
-  'ACTION=="add", SUBSYSTEM=="hidraw", KERNEL=="hidraw*"' \
+  'ACTION!="remove", SUBSYSTEM=="hidraw", KERNEL=="hidraw*"' \
   ', ATTRS{idVendor}=="047f", ATTRS{idProduct}=="c056"' \
   ', ENV{ID_USB_INTERFACE_NUM}=="03", TAG+="uaccess"' >"$rule_file"
 cat "$rule_file"
@@ -294,11 +297,15 @@ matches before `TAG+="uaccess"`.
 ```bash
 rule_file=$(mktemp)
 printf '%s%s%s\n' \
-  'ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*"' \
+  'ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*"' \
   ', ATTRS{idVendor}=="1234", ATTRS{idProduct}=="5678"' \
-  ', ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"' >"$rule_file"
+  ', ENV{ID_USB_INTERFACE_NUM}=="01", ENV{ID_INPUT_MOUSE}=="1"' \
+  ', TAG+="uaccess"' >"$rule_file"
 cat "$rule_file"
 ```
+
+Replace `ID_INPUT_MOUSE` with the exact `input_classifier` stored in the
+profile. Omit that clause only when the profile has no classifier.
 
 Inspect the generated rule and compare every match with the TOML profile.
 Continue only when none is missing or

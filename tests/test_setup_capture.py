@@ -36,6 +36,22 @@ class FakeEvdevStream:
         return self.events.pop(0)
 
 
+class TimedEvdevStream:
+    def __init__(self, clock: "FakeClock", delays: list[float]):
+        self.clock = clock
+        self.delays = delays
+        self.timeouts: list[float] = []
+
+    def read(self, timeout_seconds: float) -> RawEvdevEvent | None:
+        self.timeouts.append(timeout_seconds)
+        delay = self.delays.pop(0)
+        if delay >= timeout_seconds:
+            self.clock.advance(timeout_seconds)
+            return None
+        self.clock.advance(delay)
+        return RawEvdevEvent(ecodes.EV_KEY, ecodes.BTN_SIDE, 1)
+
+
 @dataclass
 class FakeClock:
     now: float = 0.0
@@ -135,10 +151,24 @@ class EvdevCaptureTests(unittest.TestCase):
             ]
         )
 
-        names = capture_evdev_presses(stream, timeout_seconds=2.5)
+        names = capture_evdev_presses(stream, timeout_seconds=2.5, clock=FakeClock())
 
         self.assertEqual(names, ("BTN_SIDE", "BTN_EXTRA"))
         self.assertEqual(stream.timeouts, [2.5] * 6)
+
+    def test_uses_one_deadline_across_repeated_events(self):
+        clock = FakeClock()
+        stream = TimedEvdevStream(clock, [2.0, 2.0, 2.0])
+
+        names = capture_evdev_presses(
+            stream,
+            timeout_seconds=5.0,
+            clock=clock,
+        )
+
+        self.assertEqual(names, ("BTN_SIDE",))
+        self.assertEqual(stream.timeouts, [5.0, 3.0, 1.0])
+        self.assertEqual(clock.now, 5.0)
 
 
 class EvdevTriggerDraftTests(unittest.TestCase):
@@ -449,6 +479,32 @@ class HidrawCaptureTests(unittest.TestCase):
 
 
 class ApplyDeviceDraftTests(unittest.TestCase):
+    def test_replaces_existing_profile_in_place(self):
+        document = tomlkit.parse(
+            '[actions.voice]\non_command = ["on"]\noff_command = ["off"]\n'
+            '[[devices]]\nname = "Mouse"\naction = "voice"\n'
+            'transport = "evdev"\nmode = "toggle"\nvendor_id = "1234"\n'
+            'product_id = "5678"\ntoggle_events = ["BTN_EXTRA"]\n'
+        )
+        apply_device_draft(
+            document,
+            name="Mouse",
+            action="voice",
+            selectors=SelectorDraft(
+                "evdev",
+                "1234",
+                "5678",
+                None,
+                classifier=("ID_INPUT_MOUSE", "1"),
+            ),
+            trigger=EvdevTriggerDraft(mode="toggle", toggle_events=("BTN_SIDE",)),
+            replace_name="Mouse",
+        )
+
+        self.assertEqual(len(document["devices"]), 1)
+        self.assertEqual(document["devices"][0]["toggle_events"], ["BTN_SIDE"])
+        self.assertEqual(document["devices"][0]["input_classifier"], "ID_INPUT_MOUSE")
+
     def test_adds_hidraw_reports_and_runtime_selectors_without_udev_classifier(self):
         document = tomlkit.parse(
             "# Keep this comment.\n"
@@ -490,7 +546,13 @@ class ApplyDeviceDraftTests(unittest.TestCase):
         document = tomlkit.parse(
             '[actions.voice]\non_command = ["on"]\noff_command = ["off"]\n'
         )
-        selectors = SelectorDraft("evdev", "1234", "5678", None)
+        selectors = SelectorDraft(
+            "evdev",
+            "1234",
+            "5678",
+            None,
+            classifier=("ID_INPUT_MOUSE", "1"),
+        )
 
         apply_device_draft(
             document,
@@ -506,6 +568,7 @@ class ApplyDeviceDraftTests(unittest.TestCase):
 
         device = document["devices"][0]
         self.assertEqual(device["transport"], "evdev")
+        self.assertEqual(device["input_classifier"], "ID_INPUT_MOUSE")
         self.assertEqual(device["toggle_events"], ["BTN_SIDE"])
         self.assertEqual(device["toggle_off_timeout_seconds"], 0)
         self.assertNotIn("interface_number", device)

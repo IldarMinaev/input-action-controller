@@ -3,7 +3,7 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 pkgname=input-action-controller
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 build_root=${MAKEPKG_BUILD_ROOT:-"$root/.makepkg"}
 source_dir="$build_root/sources"

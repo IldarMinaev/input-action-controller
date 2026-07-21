@@ -28,6 +28,7 @@ PUBLIC_RELEASE_SPEC.loader.exec_module(public_release)
 REQUIRED_FIXTURE_FILES = (
     ".github/dependabot.yml",
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
     ".gitignore",
     "LICENSE",
     "PKGBUILD",

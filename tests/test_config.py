@@ -122,6 +122,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(evdev.on_events, ())
         self.assertEqual(evdev.off_events, ())
         self.assertEqual(evdev.toggle_off_timeout_seconds, 60.0)
+        self.assertIsNone(evdev.input_classifier)
+
+    def test_accepts_and_validates_evdev_input_classifier(self):
+        raw = self.valid_raw()
+        raw["devices"][1]["input_classifier"] = "ID_INPUT_MOUSE"
+        self.assertEqual(
+            self.parse(raw).devices[1].input_classifier,
+            "ID_INPUT_MOUSE",
+        )
+
+        raw["devices"][1]["input_classifier"] = "ID_INPUT_VENDOR_SPECIAL"
+        with self.assertRaisesRegex(ConfigError, "input_classifier"):
+            self.parse(raw)
+
+        raw = self.valid_raw()
+        raw["devices"][0]["input_classifier"] = "ID_INPUT_MOUSE"
+        with self.assertRaisesRegex(ConfigError, "unknown"):
+            self.parse(raw)
 
     def test_applies_all_omitted_defaults(self):
         raw = self.valid_raw()

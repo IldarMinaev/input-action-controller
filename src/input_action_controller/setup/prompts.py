@@ -120,6 +120,15 @@ class ConsoleSetupPrompts:
                 return name
             self._write(f"Profile name {name!r} already exists.")
 
+    def choose_profile_operation(self, names: Sequence[str]) -> str | None:
+        self._write("Profile operation:")
+        self._write("  1. Add a new profile")
+        for index, name in enumerate(names, start=2):
+            self._write(f"  {index}. Update {name}")
+        choices = tuple(str(index) for index in range(1, len(names) + 2))
+        choice = int(self._choice("Choose [1]: ", choices, default="1"))
+        return None if choice == 1 else names[choice - 2]
+
     def confirm_port_binding(self, candidate: DeviceCandidate) -> bool:
         self._write(
             f"No stable serial distinguishes {candidate.node}. ID_PATH binds the profile to a USB port."
@@ -193,7 +202,12 @@ class ConsoleSetupPrompts:
             return UACCESS
         return INPUT_GROUP_ACCESS
 
-    def choose_evdev_trigger(self, events: Sequence[str]) -> EvdevTriggerDraft:
+    def choose_evdev_trigger(
+        self,
+        events: Sequence[str],
+        *,
+        default_toggle_timeout_seconds: float = 60.0,
+    ) -> EvdevTriggerDraft:
         if not events:
             raise ValueError("No key or button press was captured.")
         self._write("Captured presses:")
@@ -204,23 +218,46 @@ class ConsoleSetupPrompts:
         self._write("  2. Separate on and off")
         mode = self._choice("Choose [1]: ", ("1", "2"), default="1")
         if mode == "1":
-            event = events[self._number("Choose toggle event: ", len(events)) - 1]
-            draft = EvdevTriggerDraft(mode="toggle", toggle_events=(event,))
+            event = events[
+                self._number(
+                    f"Choose toggle event (enter a number from 1 to {len(events)}): ",
+                    len(events),
+                )
+                - 1
+            ]
+            draft = EvdevTriggerDraft(
+                mode="toggle",
+                toggle_events=(event,),
+                toggle_off_timeout_seconds=default_toggle_timeout_seconds,
+            )
             self._write(
                 f"Default automatic off timeout: {draft.toggle_off_timeout_seconds:g} seconds."
             )
             if not self._confirm("Configure automatic off timeout? [y/N/x] "):
                 return draft
             timeout = self._nonnegative_number(
-                "Automatic off timeout seconds [60]: ", default=60.0
+                f"Automatic off timeout seconds [{default_toggle_timeout_seconds:g}]: ",
+                default=default_toggle_timeout_seconds,
             )
             return EvdevTriggerDraft(
                 mode="toggle",
                 toggle_events=(event,),
                 toggle_off_timeout_seconds=timeout,
             )
-        on_event = events[self._number("Choose on event: ", len(events)) - 1]
-        off_event = events[self._number("Choose off event: ", len(events)) - 1]
+        on_event = events[
+            self._number(
+                f"Choose on event (enter a number from 1 to {len(events)}): ",
+                len(events),
+            )
+            - 1
+        ]
+        off_event = events[
+            self._number(
+                f"Choose off event (enter a number from 1 to {len(events)}): ",
+                len(events),
+            )
+            - 1
+        ]
         return EvdevTriggerDraft(
             mode="on-off", on_events=(on_event,), off_events=(off_event,)
         )
