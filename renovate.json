@@ -5,7 +5,9 @@
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "automerge": false,
   "schedule": ["before 6am on monday"],
   "minimumReleaseAge": "7 days",
